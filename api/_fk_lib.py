@@ -149,6 +149,21 @@ def _urllib_json_attempt(method, url, headers=None, data=None, timeout=20, proxy
 
 # ---------------------------------------------------------------- HTTP helper
 
+def _safe_err(e, proxy):
+    """Short error text for diagnostics, with any proxy credential parts
+    redacted (username/password/hostname never leave the server)."""
+    msg = str(e)[:200]
+    if proxy:
+        try:
+            u = urllib.parse.urlparse(proxy)
+            for part in (u.username, u.password, u.hostname):
+                if part and part in msg:
+                    msg = msg.replace(part, "***")
+        except Exception:
+            pass
+    return msg
+
+
 def fk_http_json(method, url, headers=None, body=None, timeout=20):
     """One HTTP call returning (status, parsed_json_or_None, raw_text,
     resp_headers, via_proxy_bool, attempts). Never raises for HTTP error
@@ -182,7 +197,8 @@ def fk_http_json(method, url, headers=None, body=None, timeout=20):
             last_err = e
             attempts.append({"via": "direct" if direct else "proxy",
                              "ok": False, "status": None,
-                             "error": type(e).__name__})
+                             "error": type(e).__name__,
+                             "detail": _safe_err(e, proxy)})
             if not direct:
                 continue  # dead/slow proxy route -> next candidate
             res = None  # direct route: urllib gets a shot below
@@ -206,7 +222,8 @@ def fk_http_json(method, url, headers=None, body=None, timeout=20):
             last_err = e
             attempts.append({"via": "direct" if direct else "proxy",
                              "ok": False, "status": None,
-                             "error": type(e).__name__})
+                             "error": type(e).__name__,
+                             "detail": _safe_err(e, proxy)})
             continue
     suffix = (" (proxy bhi try hua, phir direct — dono fail)"
               if tried_proxy else "")
