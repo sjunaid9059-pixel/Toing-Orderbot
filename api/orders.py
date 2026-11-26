@@ -68,12 +68,12 @@ def handle(body):
     status, data, _raw, _h = http_json(
         "GET", "%s/dapi/order/all" % SWIGGY_BASE, headers=headers, timeout=20)
     if status is None:
-        return 502, {"ok": False, "error": "Swiggy tak request nahi pahunchi"}
+        return 502, {"ok": False, "error": "Toing server tak request nahi pahunchi"}
     if status == 202:
         return 502, {"ok": False, "error": "swiggy_blocked",
-                     "message": "Swiggy ne is waqt request block kar di (WAF challenge)"}
+                     "message": "Toing ne is waqt request block kar di — thodi der baad try karein"}
     if status != 200 or not isinstance(data, dict):
-        return 502, {"ok": False, "error": "Swiggy se orders nahi mile (HTTP %s)" % status}
+        return 502, {"ok": False, "error": "Toing se orders nahi mile (HTTP %s)" % status}
     if data.get("statusCode") not in (None, 0):
         return 401, {"ok": False, "error": "session_expired",
                      "message": str(data.get("statusMessage") or data.get("message")

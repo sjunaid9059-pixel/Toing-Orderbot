@@ -33,6 +33,29 @@ def _parse_menu(data):
                                 price = round(float(info.get("price") or 0) / 100.0, 2)
                             except Exception:
                                 price = 0.0
+                            # Addons: Swiggy menu info carries addons as
+                            # [{groupId, groupName, choices: [{id, name, price, inStock}],
+                            #  maxAddons, minAddons, ...}] — parsed verbatim,
+                            # never invented; empty when the API sends none.
+                            addons = []
+                            for g in (info.get("addons") or []):
+                                if not isinstance(g, dict):
+                                    continue
+                                choices = []
+                                for ch in (g.get("choices") or []):
+                                    if isinstance(ch, dict) and ch.get("id") and ch.get("name"):
+                                        try:
+                                            cprice = round(float(ch.get("price") or 0) / 100.0, 2)
+                                        except Exception:
+                                            cprice = 0.0
+                                        choices.append({"id": str(ch.get("id")), "name": ch.get("name") or "",
+                                                        "price": cprice, "inStock": bool(ch.get("inStock", 1))})
+                                if choices:
+                                    addons.append({"groupId": str(g.get("groupId") or ""),
+                                                   "groupName": g.get("groupName") or "",
+                                                   "maxAddons": g.get("maxAddons"),
+                                                   "minAddons": g.get("minAddons"),
+                                                   "choices": choices})
                             items.append({
                                 "id": str(info.get("id")),
                                 "name": info.get("name") or "",
@@ -42,6 +65,7 @@ def _parse_menu(data):
                                 "inStock": bool(info.get("inStock", 1)),
                                 "isVeg": bool(info.get("isVeg")) if info.get("isVeg") is not None else None,
                                 "imageId": info.get("imageId") or "",
+                                "addons": addons,
                             })
     except Exception:
         pass
@@ -62,13 +86,13 @@ def handle(params):
            % (SWIGGY_BASE, lat, lng, urllib.parse.quote(rid)))
     status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20)
     if status is None:
-        return 502, {"ok": False, "error": "Swiggy tak request nahi pahunchi"}
+        return 502, {"ok": False, "error": "Toing server tak request nahi pahunchi"}
     if status == 202:
         return 502, {"ok": False, "error": "menu_blocked",
-                     "message": "Swiggy ka menu endpoint server-side WAF challenge ke peeche hai — "
-                                "is restaurant ke dishes Search se dikhaye jayenge (real Swiggy dish results)"}
+                     "message": "Toing ka menu endpoint server-side security check ke peeche hai — "
+                                "is restaurant ke dishes Search se dikhaye jayenge (real Toing dish results)"}
     if status != 200 or not isinstance(data, dict) or data.get("statusCode") != 0:
-        return 502, {"ok": False, "error": "Swiggy se menu nahi mila (HTTP %s)" % status}
+        return 502, {"ok": False, "error": "Toing se menu nahi mila (HTTP %s)" % status}
     items = _parse_menu(data)
     return 200, {"ok": True, "restaurantId": rid, "count": len(items), "items": items}
 

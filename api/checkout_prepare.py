@@ -19,31 +19,28 @@ import sys
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _lib import (calc_bill, http_json, read_json_body, send_json, valid_login,
-                  web_headers, SWIGGY_BASE)
-from restaurants import parse_restaurants
+from _lib import (calc_bill, read_json_body, send_json, valid_login,
+                  valid_mobile)
+from restaurants import fetch_all_restaurants
 
 
 def _serviceability(restaurant_id, address):
     lat, lng = address.get("lat"), address.get("lng")
     if lat is None or lng is None:
-        return "unknown", "Address ki location (lat/lng) set nahi hai — map pin ya current location se set karein; final delivery check Swiggy checkout me hoga"
+        return ("unknown", "Address ki location (lat/lng) set nahi hai — map pin ya current location se set karein; final delivery check Toing checkout me hoga", None)
     try:
         lat = float(lat)
         lng = float(lng)
     except Exception:
-        return "unknown", "Address ki lat/lng sahi nahi hain"
-    url = ("%s/dapi/restaurants/list/v5?lat=%s&lng=%s"
-           "&is-seo-homepage-enabled=true&page_type=REGULAR" % (SWIGGY_BASE, lat, lng))
-    status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20)
-    if status != 200 or not isinstance(data, dict) or data.get("statusCode") != 0:
-        return "unknown", "Swiggy se delivery area check nahi ho paya — final check Swiggy checkout me hoga"
-    rests = parse_restaurants(data)
+        return "unknown", "Address ki lat/lng sahi nahi hain", None
+    rests, _pages, err = fetch_all_restaurants(lat, lng)
+    if err or not rests:
+        return "unknown", "Toing se delivery area check nahi ho paya — final check Toing checkout me hoga", None
     match = next((r for r in rests if r["id"] == str(restaurant_id)), None)
     if match:
-        return "serviceable", ""
+        return "serviceable", "", match
     return "out_of_area", ("Ye address us restaurant ki delivery area se bahar hai — "
-                           "%s aapke address ke aas-paas deliver nahi karta" % restaurant_id)
+                           "%s aapke address ke aas-paas deliver nahi karta" % restaurant_id), None
 
 
 def handle(body):
@@ -55,6 +52,14 @@ def handle(body):
     address = body.get("address") or {}
     if not isinstance(address, dict) or not (address.get("text") or "").strip():
         return 400, {"ok": False, "error": "Delivery address dein"}
+    # Receiver contact — delivery partner isi number pe call karta hai.
+    # Bina receiver name + 10-digit mobile ke checkout aage nahi badhta.
+    receiver_name = (address.get("receiverName") or "").strip()
+    receiver_mobile = (address.get("receiverMobile") or "").strip()
+    if not receiver_name:
+        return 400, {"ok": False, "error": "Receiver ka naam dein — delivery partner ko chahiye"}
+    if not valid_mobile(receiver_mobile):
+        return 400, {"ok": False, "error": "Receiver ka sahi 10-digit mobile number dein"}
     cart = body.get("cart") or []
     if not isinstance(cart, list) or not cart:
         return 400, {"ok": False, "error": "Cart khaali hai"}
@@ -83,37 +88,28 @@ def handle(body):
     except Exception:
         refer_balance = 50.0
     bill = calc_bill(item_total, coupon, refer_balance)
-    serviceable, svc_msg = _serviceability(restaurant_id, address)
+    serviceable, svc_msg, match = _serviceability(restaurant_id, address)
     if serviceable == "out_of_area":
         return 200, {"ok": True, "serviceable": "out_of_area",
                      "message": svc_msg, "bill": None, "checkoutPayload": None}
     # Delivery fee: Swiggy's own feeDetails for this restaurant at the
-    # delivery location, when it exposes one. Never invented.
+    # delivery location, taken from the serviceability match — never invented.
     delivery_fee = None
-    if serviceable == "serviceable":
-        try:
-            lat, lng = float(address["lat"]), float(address["lng"])
-            url = ("%s/dapi/restaurants/list/v5?lat=%s&lng=%s"
-                   "&is-seo-homepage-enabled=true&page_type=REGULAR" % (SWIGGY_BASE, lat, lng))
-            status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20)
-            if status == 200 and isinstance(data, dict):
-                for r in parse_restaurants(data):
-                    if r["id"] == restaurant_id and r.get("deliveryFee") is not None:
-                        delivery_fee = r["deliveryFee"]
-                        break
-        except Exception:
-            delivery_fee = None
+    if match and match.get("deliveryFee") is not None:
+        delivery_fee = match["deliveryFee"]
     if delivery_fee is not None:
         bill["deliveryFee"] = round(delivery_fee, 2)
         bill["deliveryFeePending"] = False
         bill["toPay"] = round(max(0.0, item_total - bill["couponOff"] - bill["referOff"]
                                   + delivery_fee + bill["gst"]), 2)
+    delivery_contact = {"name": receiver_name, "mobile": receiver_mobile}
     payload = {
         "restaurant_id": restaurant_id,
         "items": items,
         "address": {"text": address.get("text") or "", "city": address.get("city") or "",
                     "label": address.get("label") or "Home",
                     "lat": address.get("lat"), "lng": address.get("lng")},
+        "deliveryContact": delivery_contact,
         "coupon": bill["coupon"] or "",
         "payment_method": "UPI",
         "amount": bill["toPay"],
@@ -122,6 +118,7 @@ def handle(body):
     return 200, {"ok": True, "serviceable": serviceable,
                  "serviceableNote": svc_msg if serviceable == "unknown" else "",
                  "bill": bill, "restaurantId": restaurant_id,
+                 "deliveryContact": delivery_contact,
                  "checkoutPayload": payload}
 
 

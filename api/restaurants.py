@@ -73,14 +73,68 @@ def parse_restaurants(data):
                     "distanceKm": sla.get("lastMileTravel"),
                     "serviceability": sla.get("serviceability") or "",
                     "isOpen": bool((info.get("availability") or {}).get("opened", True)),
+                    "veg": bool(info.get("veg")) if info.get("veg") is not None else None,
+                    "isNewlyOnboarded": bool(info.get("isNewlyOnboarded")),
                     "imageId": info.get("cloudinaryImageId") or "",
                     "deliveryFee": (float(fee_val) / 100.0) if isinstance(fee_val, (int, float)) else None,
                     "discountHeader": disc.get("header") or "",
                     "discountSubHeader": disc.get("subHeader") or "",
+                    "discountTag": disc.get("discountTag") or "",
                 })
             except Exception:
                 continue
     return out
+
+
+def _next_offset(data):
+    """Swiggy's pagination token for the restaurant list, or ''."""
+    try:
+        return str((data.get("data") or {}).get("pageOffset", {}).get("nextOffset") or "")
+    except Exception:
+        return ""
+
+
+def fetch_all_restaurants(lat, lng, max_pages=5):
+    """Fetch the restaurant list to exhaustion: page 1, then follow
+    Swiggy's pageOffset.nextOffset token until no new restaurants appear
+    or max_pages is reached. Live probe 2026-11-26: one page returns ~28
+    restaurants for Hyderabad and the token chain adds only 0-2 more —
+    the ~28 ARE the full serviceable set for that location at that time
+    (the window moves with live availability). Returns (restaurants,
+    pages_fetched, error_str_or_None). Never invents a restaurant."""
+    import urllib.parse
+    seen = {}
+    order = []
+    token = ""
+    pages = 0
+    last_error = None
+    for _ in range(max_pages):
+        q = ("lat=%s&lng=%s&is-seo-homepage-enabled=true&page_type=DESKTOP_WEB_LISTING"
+             % (lat, lng))
+        if token:
+            q += "&nextOffset=" + urllib.parse.quote(token)
+        url = "%s/dapi/restaurants/list/v5?%s" % (SWIGGY_BASE, q)
+        status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20)
+        pages += 1
+        if status is None:
+            last_error = "Toing server tak request nahi pahunchi"
+            break
+        if status == 202:
+            last_error = "swiggy_blocked"
+            break
+        if status != 200 or not isinstance(data, dict) or data.get("statusCode") != 0:
+            last_error = "Toing se restaurants nahi mile (HTTP %s)" % status
+            break
+        new = 0
+        for r in parse_restaurants(data):
+            if r["id"] not in seen:
+                seen[r["id"]] = r
+                order.append(r["id"])
+                new += 1
+        token = _next_offset(data)
+        if not token or new == 0:
+            break
+    return [seen[i] for i in order], pages, last_error
 
 
 def handle(params):
@@ -91,19 +145,15 @@ def handle(params):
         return 400, {"ok": False, "error": "lat/lng sahi nahi hain"}
     if not (-90 <= lat <= 90 and -180 <= lng <= 180):
         return 400, {"ok": False, "error": "lat/lng range se bahar hain"}
-    url = ("%s/dapi/restaurants/list/v5?lat=%s&lng=%s"
-           "&is-seo-homepage-enabled=true&page_type=REGULAR" % (SWIGGY_BASE, lat, lng))
-    status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20)
-    if status is None:
-        return 502, {"ok": False, "error": "Swiggy tak request nahi pahunchi"}
-    if status == 202:
+    rests, pages, err = fetch_all_restaurants(lat, lng)
+    if err == "swiggy_blocked":
         return 502, {"ok": False, "error": "swiggy_blocked",
-                     "message": "Swiggy ne is waqt request block kar di (WAF challenge) — thodi der baad try karein"}
-    if status != 200 or not isinstance(data, dict) or data.get("statusCode") != 0:
-        return 502, {"ok": False, "error": "Swiggy se restaurants nahi mile (HTTP %s)" % status}
-    rests = parse_restaurants(data)
+                     "message": "Toing ne is waqt request block kar di — thodi der baad try karein"}
+    if err and not rests:
+        return 502, {"ok": False, "error": err}
     return 200, {"ok": True, "lat": lat, "lng": lng,
-                 "count": len(rests), "restaurants": rests}
+                 "count": len(rests), "pages": pages,
+                 "restaurants": rests}
 
 
 class handler(BaseHTTPRequestHandler):

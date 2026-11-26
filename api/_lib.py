@@ -8,6 +8,7 @@ endpoints (instant 403) — dapi calls always use browser headers.
 """
 import base64
 import json
+import os
 import random
 import re
 import string
@@ -33,7 +34,7 @@ BROWSER_UA = ("Mozilla/5.0 (Linux; Android 13; Pixel 8) AppleWebKit/537.36 "
 COUPONS = {
     # BHIMNEW — verified live: flat Rs 50 off on orders above Rs 99 via BHIM UPI,
     # once per user (Swiggy applies Rs 49.99). Sources + user's own screenshot.
-    "BHIMNEW": {"off": 49.99, "min": 99, "desc": "BHIMNEW: Rs 50 off on Rs 99+ via BHIM UPI (Swiggy applies Rs 49.99)"},
+    "BHIMNEW": {"off": 49.99, "min": 99, "desc": "BHIMNEW: Rs 50 off on Rs 99+ via BHIM UPI (Toing applies Rs 49.99)"},
     # PAYTMUPI — verified: flat Rs 50 CASHBACK with Paytm UPI / UPI Lite on
     # payments above Rs 100, once across Food/Instamart/Dineout/Toing.
     # Cashback hai — bill se nahi kat-ta, Paytm me wapas milta hai.
@@ -78,8 +79,18 @@ def web_headers():
 
 
 def toing_headers(device_id, dev=None):
-    """Real Toing Android client identity — profile/auth calls ONLY."""
-    dev = dev or random.choice(TOING_DEVICE_POOL)
+    """Real Toing Android client identity — profile/auth calls ONLY.
+    The device is chosen DETERMINISTICALLY from the deviceId (same phone
+    every call): the Telegram bot fixes one device per client so send+verify
+    look like the same phone, and the mini backend must do the same —
+    a random device per call would make send and verify carry different
+    version-code / manufacturer / model headers for one session."""
+    if dev is None:
+        try:
+            idx = int(str(device_id or "")[:8], 16) % len(TOING_DEVICE_POOL)
+        except Exception:
+            idx = 0
+        dev = TOING_DEVICE_POOL[idx]
     ua = "Toing-Android/%s (Android 13; %s)" % (dev["sw"], dev["hardware"])
     return {
         "User-Agent": ua,
@@ -101,15 +112,38 @@ def toing_headers(device_id, dev=None):
     }
 
 
+def _proxy_url():
+    """Outbound proxy for Swiggy calls, when the admin set one.
+    Env var TOING_PROXY, format http://user:pass@host:port (or
+    http://host:port). Unset/empty = direct, exactly as before.
+    Never log or return the credential part of the URL."""
+    v = (os.environ.get("TOING_PROXY") or "").strip()
+    return v or None
+
+
+def proxy_configured():
+    return bool(_proxy_url())
+
+
 def http_json(method, url, headers=None, body=None, timeout=20):
     """One HTTP call returning (status, parsed_json_or_None, raw_text, resp_headers).
 
     Never raises for HTTP error statuses. Returns status None only on a
-    network failure. `body` is serialised as JSON when given."""
+    network failure. `body` is serialised as JSON when given.
+    When TOING_PROXY is set, the request goes through that proxy
+    (urllib ProxyHandler, auth from the URL); otherwise the default
+    opener is used (direct, or the runtime's own egress proxy)."""
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+    proxy = _proxy_url()
+    opener = None
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        resp = (opener.open(req, timeout=timeout) if opener
+                else urllib.request.urlopen(req, timeout=timeout))
+        with resp:
             raw = resp.read().decode("utf-8", errors="replace")
             try:
                 parsed = json.loads(raw) if raw else None
@@ -125,6 +159,31 @@ def http_json(method, url, headers=None, body=None, timeout=20):
         return e.code, parsed, raw, dict(e.headers)
     except Exception as e:
         return None, None, "NETWORK: %s: %s" % (type(e).__name__, e), {}
+
+
+def http_text(method, url, headers=None, timeout=20):
+    """Like http_json but returns raw text (for HTML pages) and the final
+    URL after redirects. Returns (status, final_url, raw_text, headers)."""
+    req = urllib.request.Request(url, headers=headers or {}, method=method)
+    proxy = _proxy_url()
+    opener = None
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    try:
+        resp = (opener.open(req, timeout=timeout) if opener
+                else urllib.request.urlopen(req, timeout=timeout))
+        with resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return resp.status, resp.geturl(), raw, dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            raw = ""
+        return e.code, e.geturl(), raw, dict(e.headers)
+    except Exception as e:
+        return None, url, "NETWORK: %s: %s" % (type(e).__name__, e), {}
 
 
 # ---------------------------------------------------------------- JWT / login JSON
@@ -286,7 +345,7 @@ def calc_bill(item_total, coupon=None, refer_balance=REFER_CASH):
             coupon_msg = "%s ke liye Rs %s aur add karein (min Rs %s)" % (
                 coupon, _inr(rule["min"] - item_total), rule["min"])
     elif coupon:
-        coupon_msg = "Coupon Swiggy checkout pe validate hoga — wahan se asli discount lagega"
+        coupon_msg = "Coupon Toing checkout pe validate hoga — wahan se asli discount lagega"
     refer_off = 0.0
     refer_msg = ""
     if item_total >= REFER_MIN_CART and float(refer_balance or 0) > 0:
@@ -375,3 +434,97 @@ def valid_login(login):
     if not pub["mobile"]:
         return False, "Login JSON me mobile missing hai"
     return True, pub
+
+
+# ---------------------------------------------------------------- Address resolving (real, never guessed)
+
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+
+
+def reverse_geocode(lat, lng):
+    """lat/lng -> real formatted address via OpenStreetMap Nominatim.
+    Returns (True, {lat, lng, text, city, area, road, postcode}) or
+    (False, {error}). No invented address, ever."""
+    try:
+        lat = float(lat)
+        lng = float(lng)
+    except Exception:
+        return False, {"error": "lat/lng sahi nahi hain"}
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return False, {"error": "lat/lng range se bahar hain"}
+    url = ("%s?format=json&lat=%s&lon=%s&zoom=18&addressdetails=1"
+           % (NOMINATIM_URL, lat, lng))
+    status, data, _raw, _h = http_json(
+        "GET", url,
+        headers={"User-Agent": "ToingMini/1.0 (toing-mini-order-bot)",
+                 "Accept": "application/json"}, timeout=15)
+    if status != 200 or not isinstance(data, dict) or not data.get("display_name"):
+        return False, {"error": "Address resolve nahi hua (Nominatim HTTP %s)" % status}
+    addr = data.get("address") or {}
+    city = (addr.get("city") or addr.get("town") or addr.get("village")
+            or addr.get("county") or addr.get("state_district") or "")
+    area = (addr.get("suburb") or addr.get("neighbourhood")
+            or addr.get("residential") or "")
+    return True, {"lat": lat, "lng": lng, "text": data.get("display_name") or "",
+                  "city": city, "area": area, "road": addr.get("road") or "",
+                  "postcode": addr.get("postcode") or ""}
+
+
+_LATLNG_RES = [
+    re.compile(r"[?&]lat=(-?\d+\.\d+)[^&]{0,60}?[&;]lng=(-?\d+\.\d+)"),
+    re.compile(r"[?&]lng=(-?\d+\.\d+)[^&]{0,60}?[&;]lat=(-?\d+\.\d+)"),
+    re.compile(r"@(-?\d+\.\d+),(-?\d+\.\d+)(?:,|$)"),
+    re.compile(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)"),
+    re.compile(r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)"),
+    re.compile(r'"latitude"\s*:\s*(-?\d+\.\d+)[^}]{0,120}?"longitude"\s*:\s*(-?\d+\.\d+)'),
+    re.compile(r'"lat"\s*:\s*(-?\d+\.\d+)\s*,\s*"lng"\s*:\s*(-?\d+\.\d+)'),
+]
+
+
+def _latlng_from_text(text):
+    """First plausible lat/lng pair in a URL or HTML body, or (None, None)."""
+    if not text:
+        return None, None
+    for rx in _LATLNG_RES:
+        m = rx.search(text)
+        if m:
+            try:
+                a, b = float(m.group(1)), float(m.group(2))
+            except Exception:
+                continue
+            # !3d/!4d and @lat,lng are (lat, lng); the lat=/lng= patterns
+            # are already ordered; the lng-first pattern swaps them back.
+            if rx.pattern.startswith("[?&]lng="):
+                a, b = b, a
+            if -90 <= a <= 90 and -180 <= b <= 180 and a != 0 and b != 0:
+                return a, b
+    return None, None
+
+
+def resolve_shared_link(url):
+    """Follow a pasted share link FOR REAL and resolve it to an address.
+
+    Follows redirects server-side, then looks for real coordinates in the
+    final URL and in the fetched page (embedded JSON). When coordinates are
+    found they are reverse-geocoded to a real formatted address. When no
+    coordinates are found, returns a truthful error — the city is NEVER
+    guessed from the link text. Returns (True, {...}) or (False, {error})."""
+    url = (url or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return False, {"error": "Sahi link paste karein (http:// ya https:// se shuru hona chahiye)"}
+    lat, lng = _latlng_from_text(url)
+    status, final_url, raw, _h = http_text(
+        "GET", url, headers=web_headers(), timeout=20)
+    if status is None:
+        return False, {"error": "Link khul nahi paya: %s" % (raw or "")[:120]}
+    if lat is None:
+        lat, lng = _latlng_from_text(final_url or "")
+    if lat is None:
+        lat, lng = _latlng_from_text(raw or "")
+    if lat is None:
+        return False, {"error": "Is link se location nahi mili — link me lat/lng nahi hai. Address manually add karein ya current location use karein"}
+    ok, geo = reverse_geocode(lat, lng)
+    if not ok:
+        return False, geo
+    geo["sourceUrl"] = final_url or url
+    return True, geo

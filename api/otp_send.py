@@ -25,10 +25,10 @@ def handle(body):
     status, data, raw, _hdrs = http_json("GET", url, headers=toing_headers(device_id), timeout=20)
     if status is None:
         return 502, {"ok": False,
-                     "error": "Swiggy auth server tak request nahi pahunchi: %s" % raw[:120]}
+                     "error": "Toing auth server tak request nahi pahunchi: %s" % raw[:120]}
     if not isinstance(data, dict):
         return 502, {"ok": False,
-                     "error": "Swiggy auth server se ajeeb response aaya (HTTP %s)" % status}
+                     "error": "Toing auth server se ajeeb response aaya (HTTP %s)" % status}
     if data.get("statusCode") != 0:
         return 400, {"ok": False,
                      "error": str(data.get("statusMessage") or data.get("message")

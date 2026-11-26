@@ -109,12 +109,12 @@ def handle(params):
            % (SWIGGY_BASE, lat, lng, urllib.parse.quote(q)))
     status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20)
     if status is None:
-        return 502, {"ok": False, "error": "Swiggy tak request nahi pahunchi"}
+        return 502, {"ok": False, "error": "Toing server tak request nahi pahunchi"}
     if status == 202:
         return 502, {"ok": False, "error": "swiggy_blocked",
-                     "message": "Swiggy ne is waqt request block kar di (WAF challenge) — thodi der baad try karein"}
+                     "message": "Toing ne is waqt request block kar di — thodi der baad try karein"}
     if status != 200 or not isinstance(data, dict) or data.get("statusCode") != 0:
-        return 502, {"ok": False, "error": "Swiggy se search results nahi mile (HTTP %s)" % status}
+        return 502, {"ok": False, "error": "Toing se search results nahi mile (HTTP %s)" % status}
     dishes, restaurants = [], []
     try:
         for card in data["data"]["cards"]:

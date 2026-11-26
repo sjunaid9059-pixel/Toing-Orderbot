@@ -42,11 +42,11 @@ def _verify_once(mobile, otp, tid, sid, device_id):
     url = "%s/login/verify?otp_source=Sms-automatic" % TOING_BASE_URL
     status, data, raw, resp_headers = http_json("POST", url, headers=headers, body=body, timeout=20)
     if status is None:
-        return False, None, "Swiggy auth server tak request nahi pahunchi", None
+        return False, None, "Toing auth server tak request nahi pahunchi", None
     if status not in (200, 201):
-        return False, None, "Swiggy auth server ne HTTP %s diya" % status, None
+        return False, None, "Toing auth server ne HTTP %s diya" % status, None
     if not isinstance(data, dict):
-        return False, None, "Swiggy se ajeeb response aaya (non-JSON)", None
+        return False, None, "Toing se ajeeb response aaya (non-JSON)", None
     login = build_toing_login_json(mobile, data)
     token = login.get("token") or _extract_token_deep(data) or _extract_token_from_headers(resp_headers)
     code = data.get("statusCode")
