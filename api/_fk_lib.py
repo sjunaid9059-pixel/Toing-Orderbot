@@ -175,8 +175,18 @@ def _urllib_json_attempt(method, url, headers=None, data=None, timeout=20, proxy
     req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     opener = None
     if proxy:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})]
+        try:
+            u = urllib.parse.urlparse(proxy)
+            if u.username:
+                pm = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+                pm.add_password(None, u.hostname or "",
+                                urllib.parse.unquote(u.username),
+                                urllib.parse.unquote(u.password or ""))
+                handlers.append(urllib.request.ProxyBasicAuthHandler(pm))
+        except Exception:
+            pass
+        opener = urllib.request.build_opener(*handlers)
     try:
         resp = (opener.open(req, timeout=timeout) if opener
                 else urllib.request.urlopen(req, timeout=timeout))
@@ -240,18 +250,18 @@ def fk_http_json(method, url, headers=None, body=None, timeout=20, proxy_overrid
         else:
             attempt_timeout = remaining
         direct = proxy is None
+        res = None
         try:
             res = _cffi_attempt(method, url, headers=headers, data=data,
                                 timeout=attempt_timeout, proxy=proxy)
         except Exception as e:
             last_err = e
             attempts.append({"via": "direct" if direct else "proxy",
+                             "transport": "curl_cffi",
                              "ok": False, "status": None,
                              "error": type(e).__name__,
                              "detail": _safe_err(e, proxy)})
-            if not direct:
-                continue  # dead/slow proxy route -> next candidate
-            res = None  # direct route: urllib gets a shot below
+            res = None  # urllib gets a shot below, on every route
         if res is not None:
             status, raw, resp_headers, _final = res
             try:
@@ -259,6 +269,7 @@ def fk_http_json(method, url, headers=None, body=None, timeout=20, proxy_overrid
             except Exception:
                 parsed = None
             attempts.append({"via": "direct" if direct else "proxy",
+                             "transport": "curl_cffi",
                              "ok": True, "status": status, "error": None})
             return status, parsed, raw, resp_headers, bool(proxy), attempts
         try:
@@ -266,11 +277,13 @@ def fk_http_json(method, url, headers=None, body=None, timeout=20, proxy_overrid
                 method, url, headers=headers, data=data,
                 timeout=attempt_timeout, proxy=proxy)
             attempts.append({"via": "direct" if direct else "proxy",
+                             "transport": "urllib",
                              "ok": True, "status": status, "error": None})
             return status, parsed, raw, resp_headers, bool(proxy), attempts
         except Exception as e:
             last_err = e
             attempts.append({"via": "direct" if direct else "proxy",
+                             "transport": "urllib",
                              "ok": False, "status": None,
                              "error": type(e).__name__,
                              "detail": _safe_err(e, proxy)})
