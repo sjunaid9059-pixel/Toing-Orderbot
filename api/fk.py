@@ -139,11 +139,11 @@ class handler(BaseHTTPRequestHandler):
         if body is not None and not isinstance(body, (dict, list)):
             send_json(self, 400, {"ok": False, "error": "body must be JSON"})
             return
-        status, data, raw, resp_headers, via_proxy = fk_http_json(
+        status, data, raw, resp_headers, via_proxy, attempts = fk_http_json(
             method, url, headers=headers, body=body, timeout=20)
         if status is None:
             send_json(self, 502, {"ok": False, "error": raw[:300],
-                                  "viaProxy": via_proxy})
+                                  "viaProxy": via_proxy, "routes": attempts})
             return
         raw = (raw or "")[:MAX_RESP_LEN]
         set_cookies = []
@@ -155,6 +155,7 @@ class handler(BaseHTTPRequestHandler):
             pass
         send_json(self, 200, {"ok": True, "status": status, "data": data,
                               "raw": raw, "viaProxy": via_proxy,
+                              "routes": attempts,
                               "setCookies": set_cookies[:10]})
 
     def log_message(self, *args):

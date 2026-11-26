@@ -151,17 +151,20 @@ def _urllib_json_attempt(method, url, headers=None, data=None, timeout=20, proxy
 
 def fk_http_json(method, url, headers=None, body=None, timeout=20):
     """One HTTP call returning (status, parsed_json_or_None, raw_text,
-    resp_headers, via_proxy_bool). Never raises for HTTP error statuses.
-    Returns status None only on a network failure. `body` is serialised
-    as JSON when given. Proxy order: TOING_PROXIES pool -> TOING_PROXY
-    -> direct. A transport failure on one route moves to the next
-    candidate; the direct attempt is always tried last (time permitting),
-    so a dead proxy never takes the call down. curl_cffi (Chrome 124)
-    first, urllib fallback on the direct route."""
+    resp_headers, via_proxy_bool, attempts). Never raises for HTTP error
+    statuses. Returns status None only on a network failure. `body` is
+    serialised as JSON when given. Proxy order: TOING_PROXIES pool ->
+    TOING_PROXY -> direct. A transport failure on one route moves to the
+    next candidate; the direct attempt is always tried last (time
+    permitting), so a dead proxy never takes the call down. curl_cffi
+    (Chrome 124) first, urllib fallback on the direct route.
+    `attempts` lists per-route outcomes (via/status/error-class only —
+    never URLs or credentials) so the caller can see why a route failed."""
     data = json.dumps(body).encode("utf-8") if body is not None else None
     deadline = time.monotonic() + timeout
     last_err = None
     tried_proxy = False
+    attempts = []
     for proxy in _proxy_candidates():
         remaining = deadline - time.monotonic()
         if remaining <= 0.5:
@@ -177,6 +180,9 @@ def fk_http_json(method, url, headers=None, body=None, timeout=20):
                                 timeout=attempt_timeout, proxy=proxy)
         except Exception as e:
             last_err = e
+            attempts.append({"via": "direct" if direct else "proxy",
+                             "ok": False, "status": None,
+                             "error": type(e).__name__})
             if not direct:
                 continue  # dead/slow proxy route -> next candidate
             res = None  # direct route: urllib gets a shot below
@@ -186,20 +192,27 @@ def fk_http_json(method, url, headers=None, body=None, timeout=20):
                 parsed = json.loads(raw) if raw else None
             except Exception:
                 parsed = None
-            return status, parsed, raw, resp_headers, bool(proxy)
+            attempts.append({"via": "direct" if direct else "proxy",
+                             "ok": True, "status": status, "error": None})
+            return status, parsed, raw, resp_headers, bool(proxy), attempts
         try:
             status, parsed, raw, resp_headers = _urllib_json_attempt(
                 method, url, headers=headers, data=data,
                 timeout=attempt_timeout, proxy=proxy)
-            return status, parsed, raw, resp_headers, bool(proxy)
+            attempts.append({"via": "direct" if direct else "proxy",
+                             "ok": True, "status": status, "error": None})
+            return status, parsed, raw, resp_headers, bool(proxy), attempts
         except Exception as e:
             last_err = e
+            attempts.append({"via": "direct" if direct else "proxy",
+                             "ok": False, "status": None,
+                             "error": type(e).__name__})
             continue
     suffix = (" (proxy bhi try hua, phir direct — dono fail)"
               if tried_proxy else "")
     return None, None, "NETWORK: %s: %s%s" % (
         type(last_err).__name__ if last_err else "Timeout",
-        last_err or "no time left", suffix), {}, False
+        last_err or "no time left", suffix), {}, False, attempts
 
 
 # ---------------------------------------------------------------- HTTP responses
