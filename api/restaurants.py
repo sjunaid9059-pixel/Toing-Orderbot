@@ -11,8 +11,8 @@ import sys
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _lib import (SWIGGY_BASE, http_json, proxy_override_from_headers,
-                  query_params, send_json, web_headers)
+from _lib import (SWIGGY_BASE, http_json_all_routes, proxy_override_from_headers,
+                  query_params, send_json, web_headers, web_headers_desktop)
 
 
 def _paise_to_rs(v):
@@ -87,56 +87,73 @@ def parse_restaurants(data):
     return out
 
 
-def _next_offset(data):
-    """Swiggy's pagination token for the restaurant list, or ''."""
-    try:
-        return str((data.get("data") or {}).get("pageOffset", {}).get("nextOffset") or "")
-    except Exception:
-        return ""
+def fetch_all_restaurants(lat, lng, proxy_override=None):
+    """Fetch the restaurant list via EVERY route (direct + proxy) AND both
+    User-Agents (mobile + desktop) in PARALLEL and merge/dedupe by id.
+    ROOT CAUSE, live-probed 2026-11-26: the 9-vs-28 gap is NOT the proxy —
+    it is the User-Agent. The backend's mobile UA gets 9 restaurants
+    (CakeZone first); a desktop Chrome UA gets 28 (Lucky Restaurant
+    first); 7 mobile-only restaurants (bakeries) are missing from the
+    desktop set and 21 desktop-only ones are missing from mobile. One
+    UA alone hides the other set, so the user only ever saw 9. The union
+    of both UAs (across all routes) is the real set (~30+). Pagination
+    is dropped: page 2 via pageOffset.nextOffset returns the SAME
+    restaurants as page 1 (dedup adds 0). Returns (restaurants,
+    routes_note, error_str_or_None). Never invents a restaurant."""
+    from concurrent.futures import ThreadPoolExecutor
+    url = ("%s/dapi/restaurants/list/v5?lat=%s&lng=%s"
+           "&is-seo-homepage-enabled=true&page_type=DESKTOP_WEB_LISTING"
+           % (SWIGGY_BASE, lat, lng))
+    variants = [("mobile", web_headers()), ("desktop", web_headers_desktop())]
 
+    def _one(variant):
+        name, headers = variant
+        return name, http_json_all_routes(
+            "GET", url, headers=headers,
+            timeout=20, proxy_override=proxy_override)
 
-def fetch_all_restaurants(lat, lng, max_pages=5, proxy_override=None):
-    """Fetch the restaurant list to exhaustion: page 1, then follow
-    Swiggy's pageOffset.nextOffset token until no new restaurants appear
-    or max_pages is reached. Live probe 2026-11-26: one page returns ~28
-    restaurants for Hyderabad and the token chain adds only 0-2 more —
-    the ~28 ARE the full serviceable set for that location at that time
-    (the window moves with live availability). Returns (restaurants,
-    pages_fetched, error_str_or_None). Never invents a restaurant."""
-    import urllib.parse
+    variant_results = {}
+    with ThreadPoolExecutor(max_workers=len(variants)) as ex:
+        for name, results in ex.map(_one, variants):
+            variant_results[name] = results
     seen = {}
     order = []
-    token = ""
-    pages = 0
-    last_error = None
-    for _ in range(max_pages):
-        q = ("lat=%s&lng=%s&is-seo-homepage-enabled=true&page_type=DESKTOP_WEB_LISTING"
-             % (lat, lng))
-        if token:
-            q += "&nextOffset=" + urllib.parse.quote(token)
-        url = "%s/dapi/restaurants/list/v5?%s" % (SWIGGY_BASE, q)
-        status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20,
-                                          proxy_override=proxy_override)
-        pages += 1
-        if status is None:
-            last_error = "Toing server tak request nahi pahunchi"
-            break
-        if status == 202:
-            last_error = "swiggy_blocked"
-            break
-        if status != 200 or not isinstance(data, dict) or data.get("statusCode") != 0:
-            last_error = "Toing se restaurants nahi mile (HTTP %s)" % status
-            break
-        new = 0
-        for r in parse_restaurants(data):
-            if r["id"] not in seen:
-                seen[r["id"]] = r
-                order.append(r["id"])
-                new += 1
-        token = _next_offset(data)
-        if not token or new == 0:
-            break
-    return [seen[i] for i in order], pages, last_error
+    counts = {"direct": 0, "proxy": 0, "mobile": 0, "desktop": 0}
+    routes_ok = 0
+    blocked = False
+    first_status = None
+    total_results = 0
+    for name, results in variant_results.items():
+        for (proxy, status, data, _raw, _h) in results:
+            total_results += 1
+            if status is None:
+                continue
+            if first_status is None:
+                first_status = status
+            if status == 202:
+                blocked = True
+                continue
+            if status != 200 or not isinstance(data, dict) or data.get("statusCode") != 0:
+                continue
+            routes_ok += 1
+            rs = parse_restaurants(data)
+            counts["direct" if proxy is None else "proxy"] += len(rs)
+            counts[name] += len(rs)
+            for r in rs:
+                if r["id"] not in seen:
+                    seen[r["id"]] = r
+                    order.append(r["id"])
+    rests = [seen[i] for i in order]
+    routes = {"direct": counts["direct"], "proxy": counts["proxy"],
+              "mobile": counts["mobile"], "desktop": counts["desktop"],
+              "union": len(rests), "routesOk": routes_ok}
+    if rests:
+        return rests, routes, None
+    if blocked:
+        return [], routes, "swiggy_blocked"
+    if not total_results:
+        return [], routes, "Toing server tak request nahi pahunchi"
+    return [], routes, "Toing se restaurants nahi mile (HTTP %s)" % first_status
 
 
 def handle(params, proxy_override=None):
@@ -147,14 +164,15 @@ def handle(params, proxy_override=None):
         return 400, {"ok": False, "error": "lat/lng sahi nahi hain"}
     if not (-90 <= lat <= 90 and -180 <= lng <= 180):
         return 400, {"ok": False, "error": "lat/lng range se bahar hain"}
-    rests, pages, err = fetch_all_restaurants(lat, lng, proxy_override=proxy_override)
+    rests, routes, err = fetch_all_restaurants(lat, lng, proxy_override=proxy_override)
     if err == "swiggy_blocked":
         return 502, {"ok": False, "error": "swiggy_blocked",
                      "message": "Toing ne is waqt request block kar di — thodi der baad try karein"}
     if err and not rests:
         return 502, {"ok": False, "error": err}
     return 200, {"ok": True, "lat": lat, "lng": lng,
-                 "count": len(rests), "pages": pages,
+                 "count": len(rests), "pages": routes.get("routesOk", 0),
+                 "routes": routes,
                  "restaurants": rests}
 
 

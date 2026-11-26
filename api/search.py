@@ -13,7 +13,7 @@ import sys
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _lib import (SWIGGY_BASE, http_json, proxy_override_from_headers,
+from _lib import (SWIGGY_BASE, http_json_all_routes, proxy_override_from_headers,
                   query_params, send_json, web_headers)
 
 
@@ -108,29 +108,48 @@ def handle(params, proxy_override=None):
     url = ("%s/dapi/restaurants/search/v3?lat=%s&lng=%s&str=%s"
            "&trackingId=toing-mini&submitAction=ENTER&queryUniqueId=toing-mini-1"
            % (SWIGGY_BASE, lat, lng, urllib.parse.quote(q)))
-    status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20,
-                                      proxy_override=proxy_override)
-    if status is None:
-        return 502, {"ok": False, "error": "Toing server tak request nahi pahunchi"}
-    if status == 202:
-        return 502, {"ok": False, "error": "swiggy_blocked",
-                     "message": "Toing ne is waqt request block kar di — thodi der baad try karein"}
-    if status != 200 or not isinstance(data, dict) or data.get("statusCode") != 0:
-        return 502, {"ok": False, "error": "Toing se search results nahi mile (HTTP %s)" % status}
-    dishes, restaurants = [], []
-    try:
-        for card in data["data"]["cards"]:
-            group = (card.get("groupedCard") or {}).get("cardGroupMap") or {}
-            for dish_card in (group.get("DISH") or {}).get("cards") or []:
-                d = _dish_from_card(dish_card)
-                if d:
-                    dishes.append(d)
-            for rest_card in (group.get("RESTAURANT") or {}).get("cards") or []:
-                r = _restaurant_from_card(rest_card)
-                if r:
-                    restaurants.append(r)
-    except Exception:
-        pass
+    # Same union as restaurants: different routes see different live dish
+    # sets (search/v3 caps at ~102 cards per query per route), so fetch
+    # via every route in parallel and merge/dedupe by id.
+    results = http_json_all_routes("GET", url, headers=web_headers(),
+                                   timeout=20, proxy_override=proxy_override)
+    dishes_by_id, rests_by_id = {}, {}
+    blocked = False
+    first_status = None
+    any_ok = False
+    for (_proxy, status, data, _raw, _h) in results:
+        if status is None:
+            continue
+        if first_status is None:
+            first_status = status
+        if status == 202:
+            blocked = True
+            continue
+        if status != 200 or not isinstance(data, dict) or data.get("statusCode") != 0:
+            continue
+        any_ok = True
+        try:
+            for card in data["data"]["cards"]:
+                group = (card.get("groupedCard") or {}).get("cardGroupMap") or {}
+                for dish_card in (group.get("DISH") or {}).get("cards") or []:
+                    d = _dish_from_card(dish_card)
+                    if d and d["id"] not in dishes_by_id:
+                        dishes_by_id[d["id"]] = d
+                for rest_card in (group.get("RESTAURANT") or {}).get("cards") or []:
+                    r = _restaurant_from_card(rest_card)
+                    if r and r["id"] not in rests_by_id:
+                        rests_by_id[r["id"]] = r
+        except Exception:
+            pass
+    if not any_ok:
+        if blocked:
+            return 502, {"ok": False, "error": "swiggy_blocked",
+                         "message": "Toing ne is waqt request block kar di — thodi der baad try karein"}
+        if not results:
+            return 502, {"ok": False, "error": "Toing server tak request nahi pahunchi"}
+        return 502, {"ok": False, "error": "Toing se search results nahi mile (HTTP %s)" % first_status}
+    dishes = list(dishes_by_id.values())
+    restaurants = list(rests_by_id.values())
     if tab == "restaurant":
         return 200, {"ok": True, "q": q, "restaurants": restaurants,
                      "dishes": dishes, "count": len(restaurants)}

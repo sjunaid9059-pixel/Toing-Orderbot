@@ -38,6 +38,9 @@ TOING_DEVICE_POOL = [
 BROWSER_UA = ("Mozilla/5.0 (Linux; Android 13; Pixel 8) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
 
+DESKTOP_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
 COUPONS = {
     # BHIMNEW — verified live: flat Rs 50 off on orders above Rs 99 via BHIM UPI,
     # once per user (Swiggy applies Rs 49.99). Sources + user's own screenshot.
@@ -308,6 +311,19 @@ def web_headers():
     }
 
 
+def web_headers_desktop():
+    """Desktop-Chrome browser headers for Swiggy dapi/* — same shape as
+    web_headers, only the User-Agent differs. PROVEN 2026-11-26: Swiggy
+    returns a DIFFERENT (much larger) restaurant set for a desktop UA
+    (28 restaurants, Lucky first) than for the mobile UA (9, CakeZone
+    first) — 7 mobile-only restaurants (bakeries) are missing from the
+    desktop set and 21 desktop-only ones are missing from mobile. The
+    restaurant list therefore fetches with BOTH UAs and merges them."""
+    h = web_headers()
+    h["User-Agent"] = DESKTOP_UA
+    return h
+
+
 def toing_headers(device_id, dev=None):
     """Real Toing Android client identity — profile/auth calls ONLY.
     The device is chosen DETERMINISTICALLY from the deviceId (same phone
@@ -355,6 +371,70 @@ def proxy_configured():
     return bool(_proxy_url() or _proxy_pool())
 
 
+def _http_json_one_route(method, url, headers, data, timeout, proxy):
+    """ONE route attempt for http_json: returns (status, parsed, raw,
+    headers). Raises on transport failure. For Swiggy hosts the attempt
+    goes through curl_cffi (Chrome 124 impersonation) first; on the
+    DIRECT route a curl_cffi transport failure falls back to urllib, on
+    a proxy route it raises so the caller moves to the next route.
+    An HTTP error status is a real response and is returned, never raised."""
+    direct = proxy is None
+    if _swiggy_host(url):
+        try:
+            res = _cffi_attempt(method, url, headers=headers, data=data,
+                                timeout=timeout, proxy=proxy)
+        except Exception:
+            if not direct:
+                raise  # dead/slow proxy route -> caller tries next route
+            res = None  # direct route: urllib gets a shot below
+        if res is not None:
+            status, raw, resp_headers, _final = res
+            _record_route("curl_cffi", proxy)
+            try:
+                parsed = json.loads(raw) if raw else None
+            except Exception:
+                parsed = None
+            return status, parsed, raw, resp_headers
+    status, parsed, raw, resp_headers = _urllib_json_attempt(
+        method, url, headers=headers, data=data,
+        timeout=timeout, proxy=proxy)
+    _record_route("urllib", proxy)
+    return status, parsed, raw, resp_headers
+
+
+def http_json_all_routes(method, url, headers=None, body=None, timeout=20, proxy_override=None):
+    """Fetch the SAME url via EVERY route candidate in PARALLEL and return
+    every HTTP response received: [(proxy_or_None, status, parsed, raw,
+    headers)]. Transport failures on a route are skipped, never fatal.
+    Proxy routes are capped at 8s each; the direct route gets the full
+    timeout. Wall time is ~the slowest single route, not the sum — so
+    merging the direct set with the proxy set costs no extra latency.
+    Needed because different routes see DIFFERENT live data: list/v5 via
+    the residential proxy returns a different (partially overlapping)
+    restaurant set than direct, and http_json's first-success return
+    hides the other set entirely. Every item still comes from a real
+    Swiggy response — nothing is invented."""
+    from concurrent.futures import ThreadPoolExecutor
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    cands = _proxy_candidates(proxy_override)
+
+    def _one(proxy):
+        t = min(timeout, 8) if proxy else timeout
+        try:
+            status, parsed, raw, resp_headers = _http_json_one_route(
+                method, url, headers, data, t, proxy)
+            return (proxy, status, parsed, raw, resp_headers)
+        except Exception:
+            return None
+
+    out = []
+    with ThreadPoolExecutor(max_workers=len(cands)) as ex:
+        for r in ex.map(_one, cands):
+            if r is not None:
+                out.append(r)
+    return out
+
+
 def http_json(method, url, headers=None, body=None, timeout=20, proxy_override=None):
     """One HTTP call returning (status, parsed_json_or_None, raw_text, resp_headers).
 
@@ -367,7 +447,9 @@ def http_json(method, url, headers=None, body=None, timeout=20, proxy_override=N
     down. For Swiggy/Toing hosts the call first goes through curl_cffi
     (Chrome 124 impersonation) and falls back to urllib if curl_cffi is
     unavailable or its transport fails on the direct route. Other hosts
-    (e.g. Nominatim) stay on urllib, exactly as before."""
+    (e.g. Nominatim) stay on urllib, exactly as before. NOTE: this returns
+    the FIRST successful route only — when different routes see different
+    live data, use http_json_all_routes and merge the results."""
     data = json.dumps(body).encode("utf-8") if body is not None else None
     deadline = time.monotonic() + timeout
     last_err = None
@@ -376,35 +458,14 @@ def http_json(method, url, headers=None, body=None, timeout=20, proxy_override=N
         remaining = deadline - time.monotonic()
         if remaining <= 0.5:
             break
-        direct = proxy is None
         if proxy:
             tried_proxy = True
             attempt_timeout = min(remaining, 8)
         else:
             attempt_timeout = remaining
-        if _swiggy_host(url):
-            try:
-                res = _cffi_attempt(method, url, headers=headers, data=data,
-                                    timeout=attempt_timeout, proxy=proxy)
-            except Exception as e:
-                last_err = e
-                if not direct:
-                    continue  # dead/slow proxy route -> next candidate
-                res = None  # direct route: urllib gets a shot below
-            if res is not None:
-                status, raw, resp_headers, _final = res
-                _record_route("curl_cffi", proxy)
-                try:
-                    parsed = json.loads(raw) if raw else None
-                except Exception:
-                    parsed = None
-                return status, parsed, raw, resp_headers
         try:
-            status, parsed, raw, resp_headers = _urllib_json_attempt(
-                method, url, headers=headers, data=data,
-                timeout=attempt_timeout, proxy=proxy)
-            _record_route("urllib", proxy)
-            return status, parsed, raw, resp_headers
+            return _http_json_one_route(method, url, headers, data,
+                                        attempt_timeout, proxy)
         except Exception as e:
             last_err = e
             continue

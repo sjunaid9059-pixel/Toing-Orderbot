@@ -861,7 +861,7 @@ function restCard(R){
   return '<div class="card" style="cursor:pointer" onclick="openMenu(\'' + R.id + '\')"><div class="row">' + restImg(R) + '<div class="grow"><b style="font-size:16px">' + esc(R.name) + '</b>' + (R.isOpen === false ? ' <span class="tag" style="background:var(--red-bg);color:var(--red)">Band hai</span>' : '') + '<div class="muted">' + esc(R.areaName || R.locality || '') + ' • ' + esc((R.cuisines||[]).slice(0,3).join(', ')) + '</div><div class="muted">' + esc(R.slaString || '') + (R.distanceKm ? ' • ' + R.distanceKm + ' km' : '') + (R.costForTwo ? ' • ' + money(R.costForTwo) + ' for two' : '') + '</div>' + (R.discountHeader ? '<div style="color:var(--sky-dark);font-weight:700;font-size:13px">' + esc(R.discountHeader) + ' ' + esc(R.discountSubHeader||'') + '</div>' : '') + '</div><span class="tag">★ ' + esc(R.avgRatingString || R.avgRating || '—') + '</span></div></div>';
 }
 
-/* ================= Menu (real dishes via search; menu/pl blocked hota hai to fallback) ================= */
+/* ================= Menu (browser warm-up + /api/menu_search; menu/pl blocked hota hai to fallback) ================= */
 async function openMenu(restId){
   var R = (state.restaurants || []).find(function(x){ return String(x.id) === String(restId); })
     || ((state.searchResults && state.searchResults.restaurants) || []).find(function(x){ return String(x.id) === String(restId); });
@@ -879,31 +879,62 @@ async function openMenu(restId){
       return;
     }
     /* Browser context: swiggy.com warm-up ke baad menu/pl seedha phone ke browser se */
-    var bm = await fetchBrowserMenu(restId);
+    var bm = await fetchBrowserMenu(restId, R.name);
     if(bm && bm.length){
       state.menuItems = bm.map(function(it){ it.restaurant = {id: String(R.id), name: R.name, areaName: R.areaName}; return it; });
       state.menuCats = [...new Set(state.menuItems.map(function(x){ return x.category || ''; }).filter(Boolean))];
       renderMenu('Toing full menu se ' + state.menuItems.length + ' items (phone browser se live)');
       return;
     }
-    /* menu/pl server-side block hai — Toing search se is restaurant ke asli dishes */
-    var s = await api('/api/search?q=' + encodeURIComponent(R.name) + '&lat=' + state.lat + '&lng=' + state.lng + '&tab=dish');
-    var dishes = ((s.data && s.data.dishes) || []).filter(function(d){ return String(d.restaurant && d.restaurant.id) === String(restId); });
+    /* menu/pl server-side block hai — /api/menu_search: naam + cuisines se
+       Toing dish search, sirf is restaurant ke asli dishes */
+    var ms = await api('/api/menu_search?restaurantId=' + encodeURIComponent(restId) + '&lat=' + state.lat + '&lng=' + state.lng + '&name=' + encodeURIComponent(R.name) + '&cuisines=' + encodeURIComponent((R.cuisines||[]).join(',')));
+    var dishes = (ms.data && ms.data.ok && ms.data.dishes) || [];
     if(dishes.length){
       state.menuItems = dishes;
+      state.menuCats = [...new Set(dishes.map(function(x){ return x.category || ''; }).filter(Boolean))];
       renderMenu('Toing dish search se ' + dishes.length + ' dishes (menu endpoint Toing ki taraf se block hai, isliye search results use ho rahe hain)');
       return;
     }
-    /* Last resort: naam se search ke saare dishes dikhao, restaurant filter ke saath */
-    var all = ((s.data && s.data.dishes) || []).filter(function(d){ return !state.vegOnly || d.isVeg === true; });
-    state.menuItems = all;
-    state.menuCats = [...new Set(all.map(function(x){ return x.category || ''; }).filter(Boolean))];
-    renderMenu(all.length ? 'Is restaurant ke dishes Toing search me alag se nahi mile — "' + R.name + '" search ke ' + all.length + ' dishes dikhaye ja rahe hain' : 'Is restaurant ke dishes Toing search se nahi mile — Search tab se dish add karein');
+    /* Kahin se bhi dishes nahi mile — doosre restaurant ke dishes dikhana
+       galat hota, isliye sach batate hain */
+    state.menuItems = []; state.menuCats = [];
+    $('menuBox').innerHTML = '<div class="card"><div class="row">' + restImg(R) + '<div class="grow"><b style="font-size:18px">' + esc(R.name) + '</b><div class="muted">' + esc(R.areaName || '') + ' • ' + esc(R.slaString || '') + '</div></div><span class="tag">★ ' + esc(R.avgRatingString || '—') + '</span></div><div class="alert" style="margin-top:14px">Is restaurant ka menu Toing se load nahi ho raha — Search tab se dish search karke add karein.</div><div style="margin-top:12px"><button class="btn" onclick="go(\'search\')">🔍 Search tab kholein</button></div></div>';
   }catch(e){
     $('menuBox').innerHTML = '<div class="alert">❌ Menu load nahi hua — backend se connect nahi ho paya.</div>';
   }
 }
-async function fetchBrowserMenu(restId){
+/* Toing ka security check sirf asli browser me pass hota hai: menu/pl fetch
+   karne se pehle swiggy.com ko hidden iframe me kholte hain taaki clearance
+   cookies set ho jayein, phir fetch karte hain. Bina warm-up ke har fetch
+   202 challenge pe fail hota hai. Ek session me ek baar warm-up kaafi hai. */
+async function warmUpSwiggy(restId, restName){
+  if(state.warmUpReady) return;
+  var urls = ['https://www.swiggy.com/'];
+  if(restId){
+    var slug = String(restName || 'restaurant').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'restaurant';
+    urls.push('https://www.swiggy.com/restaurants/' + slug + '-' + encodeURIComponent(restId));
+  }
+  for(var i = 0; i < urls.length; i++){
+    try{
+      await new Promise(function(resolve){
+        var done = false;
+        var finish = function(){ if(done) return; done = true; resolve(); };
+        var f = document.createElement('iframe');
+        f.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;border:0;opacity:0';
+        f.setAttribute('aria-hidden', 'true');
+        f.src = urls[i];
+        f.onload = function(){ setTimeout(function(){ try{ f.remove(); }catch(e){} finish(); }, 3000); };
+        f.onerror = function(){ try{ f.remove(); }catch(e){} finish(); };
+        document.body.appendChild(f);
+        setTimeout(function(){ try{ f.remove(); }catch(e){} finish(); }, 9000);
+      });
+    }catch(e){ /* agla URL try karein */ }
+  }
+  state.warmUpReady = true;
+}
+async function fetchBrowserMenu(restId, restName){
+  await warmUpSwiggy(restId, restName);
   var url = 'https://www.swiggy.com/dapi/menu/pl?page-type=REGULAR&complete-menu=true&lat=' + state.lat + '&lng=' + state.lng + '&restaurantId=' + encodeURIComponent(restId) + '&catalog_qa=undefined&submitAction=ENTER';
   var modes = ['include', 'omit'];
   for(var i=0;i<modes.length;i++){
