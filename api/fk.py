@@ -16,8 +16,12 @@ Security — the relay is NOT an open proxy:
   * Only https URLs on Flipkart hosts are forwarded (allowlist below).
   * Only GET/POST, bounded sizes (URL 2KB, body 64KB, response 512KB).
   * No request or response logging of bodies, cookies or credentials.
-  * Per-request proxy override is NOT supported here — the server env
-    proxy is the only route (plus direct fallback inside the lib).
+  * Per-request proxy override is supported ONLY with a valid relay
+    key: header X-Relay-Proxy with a proxy URL (or host:port:user:pass).
+    The override is the only route tried for that request — no silent
+    fallback — so the caller can rotate proxies on a 502/403. The
+    server env proxy (TOING_PROXY/TOING_PROXIES) is used when no
+    override is sent.
 
 GET /api/fk -> status only (no auth): {ok, relay, proxyConfigured,
 proxyHost (masked), proxySource}. No credentials in any response.
@@ -31,7 +35,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _fk_lib import fk_http_json, proxy_status, send_json
+from _fk_lib import (_normalize_proxy_url, fk_http_json, proxy_status,
+                     send_json)
 
 # SHA-256 hex of the relay key. The raw key is in the bot's private
 # .env (FK_RELAY_KEY) and nowhere else. Rotate by generating a new key,
@@ -139,8 +144,24 @@ class handler(BaseHTTPRequestHandler):
         if body is not None and not isinstance(body, (dict, list)):
             send_json(self, 400, {"ok": False, "error": "body must be JSON"})
             return
+        # Key-gated per-request proxy override: only the relay-key holder
+        # (the bot) may choose the exit proxy. The value is normalized
+        # (userinfo percent-encoded) and validated; a bad value is 400.
+        # When an override is set it is the ONLY route — no silent
+        # fallback to direct, so the caller can rotate on a 502/403.
+        override_raw = (self.headers.get("X-Relay-Proxy") or "").strip()
+        override = None
+        if override_raw:
+            if len(override_raw) > 512:
+                send_json(self, 400, {"ok": False, "error": "bad proxy"})
+                return
+            override = _normalize_proxy_url(override_raw)
+            if not override:
+                send_json(self, 400, {"ok": False, "error": "bad proxy"})
+                return
         status, data, raw, resp_headers, via_proxy, attempts = fk_http_json(
-            method, url, headers=headers, body=body, timeout=20)
+            method, url, headers=headers, body=body, timeout=20,
+            proxy_override=override)
         if status is None:
             send_json(self, 502, {"ok": False, "error": raw[:300],
                                   "viaProxy": via_proxy, "routes": attempts})

@@ -38,10 +38,59 @@ def _proxy_url():
     return v or None
 
 
-def _proxy_candidates():
+def _normalize_proxy_url(raw):
+    """Normalize a proxy string to http://user:pass@host:port with the
+    userinfo percent-encoded. ProxyRise usernames contain a space
+    ('res-indian -sid-123') — a raw space breaks the URL and the gateway
+    answers 407. Accepts http(s):// URLs, user:pass@host:port, and
+    host:port:user:pass. Returns None when unparsable."""
+    if not raw or not isinstance(raw, str):
+        return None
+    p = raw.strip()
+    if not p:
+        return None
+    if p.startswith(("http://", "https://")):
+        try:
+            u = urllib.parse.urlparse(p)
+            if not u.hostname:
+                return None
+            auth = ""
+            if u.username:
+                auth = urllib.parse.quote(u.username, safe="%-._~")
+                if u.password is not None:
+                    auth += ":" + urllib.parse.quote(u.password, safe="%-._~")
+                auth += "@"
+            port = ":%d" % u.port if u.port else ""
+            return "%s://%s%s%s" % (u.scheme.lower(), auth, u.hostname, port)
+        except Exception:
+            return None
+    if "@" in p:
+        return _normalize_proxy_url("http://" + p)
+    parts = p.split(":")
+    if len(parts) == 4:
+        host, port, user, pwd = parts
+        try:
+            int(port)
+        except Exception:
+            return None
+        if not host or not user:
+            return None
+        return "http://%s:%s@%s:%s" % (
+            urllib.parse.quote(user, safe="%-._~"),
+            urllib.parse.quote(pwd, safe="%-._~"), host, port)
+    return None
+
+
+def _proxy_candidates(override=None):
     """Ordered proxy URLs to try for one request, then None (direct).
     Pool capped at 3 entries per request so a long dead pool cannot
-    eat the serverless budget; the direct attempt always happens last."""
+    eat the serverless budget; the direct attempt always happens last.
+    When an override is given, it is the ONLY candidate — no silent
+    fallback to direct, so the caller gets a clear dead-proxy signal
+    (502) and can rotate to the next proxy itself."""
+    if override:
+        norm = _normalize_proxy_url(override)
+        return [norm] if norm else []
     cands = []
 
     def _add(p):
@@ -164,7 +213,7 @@ def _safe_err(e, proxy):
     return msg
 
 
-def fk_http_json(method, url, headers=None, body=None, timeout=20):
+def fk_http_json(method, url, headers=None, body=None, timeout=20, proxy_override=None):
     """One HTTP call returning (status, parsed_json_or_None, raw_text,
     resp_headers, via_proxy_bool, attempts). Never raises for HTTP error
     statuses. Returns status None only on a network failure. `body` is
@@ -174,13 +223,14 @@ def fk_http_json(method, url, headers=None, body=None, timeout=20):
     permitting), so a dead proxy never takes the call down. curl_cffi
     (Chrome 124) first, urllib fallback on the direct route.
     `attempts` lists per-route outcomes (via/status/error-class only —
-    never URLs or credentials) so the caller can see why a route failed."""
+    never URLs or credentials) so the caller can see why a route failed.
+    When proxy_override is set, it is the only route tried."""
     data = json.dumps(body).encode("utf-8") if body is not None else None
     deadline = time.monotonic() + timeout
     last_err = None
     tried_proxy = False
     attempts = []
-    for proxy in _proxy_candidates():
+    for proxy in _proxy_candidates(proxy_override):
         remaining = deadline - time.monotonic()
         if remaining <= 0.5:
             break
