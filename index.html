@@ -310,6 +310,19 @@ ol.steps{padding-left:20px;font-size:14px;line-height:1.65}
     <p class="muted" id="apiBaseMsg"></p>
   </div>
   <div class="card">
+    <b>🔀 Proxy</b>
+    <p class="muted">Server ke calls kis proxy se ja rahe hain — yahan se proxy add / change / remove karein. Bina redeploy ke turant lagta hai. Sirf host dikhta hai, password kabhi nahi dikhta.</p>
+    <div class="row" style="margin-top:8px"><span class="muted">Status:</span><b id="proxyStatusTxt">Checking…</b></div>
+    <div class="muted" id="proxyHostTxt" style="margin-top:4px"></div>
+    <label class="fl" style="margin-top:10px">Proxy URL</label>
+    <input type="text" id="proxyIn" placeholder="http://user:pass@host:port" autocomplete="off">
+    <div class="row" style="margin-top:10px">
+      <button class="btn btn-green" onclick="saveProxy()">Save / Change</button>
+      <button class="btn btn-danger" onclick="removeProxy()">Remove</button>
+    </div>
+    <p class="muted" id="proxyMsg"></p>
+  </div>
+  <div class="card">
     <b>🤖 Mini App ko apne Telegram Bot me attach karein</b>
     <ol class="steps">
       <li>Telegram me <b>@BotFather</b> kholein → <span class="kbd">/mybots</span> → apna bot (jaise <b>@TOINGMTNBOT</b>) select karein</li>
@@ -387,9 +400,14 @@ function apiBase(){
 function apiUrl(path){ return apiBase() + path; }
 async function api(path, opts){
   var o = opts || {};
+  var headers = {'Content-Type':'application/json'};
+  try{
+    var px = localStorage.getItem('toing_proxy');
+    if(px) headers['X-Toing-Proxy'] = px;  /* per-device proxy override (Tools → Proxy) */
+  }catch(e){}
   var res = await fetch(apiUrl(path), {
     method: o.method || 'GET',
-    headers: {'Content-Type':'application/json'},
+    headers: headers,
     body: o.body ? JSON.stringify(o.body) : undefined
   });
   var data = null;
@@ -439,6 +457,7 @@ function go(tab){
   if(tab==='search') loadRestaurants();
   if(tab==='orders') loadOrders();
   if(tab==='cart') renderCart();
+  if(tab==='tools') loadProxyStatus();
   renderAll(); window.scrollTo(0,0);
 }
 function refreshAll(){ loadRestaurants(); renderAll(); toast('Refresh ho gaya ✓'); }
@@ -1234,9 +1253,66 @@ async function testApiBase(){
   }catch(e){ $('apiBaseMsg').textContent = '❌ Backend se connect nahi ho paya — URL galat ho sakta hai ya Vercel deploy abhi live nahi hai.'; }
 }
 
+/* ================= Proxy manager (Tools) ================= */
+/* Per-device proxy override: localStorage me save hota hai, har API call
+   pe X-Toing-Proxy header se backend ko bheja jata hai. UI me kabhi
+   poora URL / password nahi dikhta — sirf masked host (jaise
+   gw.proxyrise.com). Save ke baad input khaali rehta hai (purana URL
+   dobara nahi dikhta). Remove karne pe backend server env proxy, phir
+   direct pe wapas chala jata hai. */
+function proxyHostOf(u){
+  try{ return new URL(u).hostname || ''; }catch(e){ return ''; }
+}
+function getSavedProxy(){
+  try{ return localStorage.getItem('toing_proxy') || ''; }catch(e){ return ''; }
+}
+async function loadProxyStatus(){
+  var st = $('proxyStatusTxt'); if(!st) return;
+  var saved = getSavedProxy();
+  if(saved){
+    st.textContent = '✅ Is device ka proxy laga hai';
+    $('proxyHostTxt').textContent = 'Host: ' + (proxyHostOf(saved) || '—') + ' (server proxy ki jagah ye use hoga)';
+    $('proxyIn').placeholder = 'Naya proxy URL yahan daalein (purana change ho jayega)';
+    return;
+  }
+  st.textContent = 'Checking…';
+  try{
+    var r = await api('/api/proxy');
+    var d = r.data || {};
+    if(d.proxyConfigured){
+      st.textContent = '✅ Server proxy laga hai';
+      $('proxyHostTxt').textContent = 'Host: ' + (d.proxyHost || '—') + ' (source: ' + (d.proxySource || 'server') + ')';
+    } else {
+      st.textContent = '❌ Koi proxy nahi — direct chal raha hai';
+      $('proxyHostTxt').textContent = '';
+    }
+    if(d.overrideRejected) $('proxyMsg').textContent = '⚠️ Pichla proxy URL galat tha, isliye ignore hua.';
+  }catch(e){
+    st.textContent = 'Status nahi mil paya — backend check karein';
+  }
+}
+function saveProxy(){
+  var v = $('proxyIn').value.trim();
+  if(!v){ toast('Proxy URL daalein (http://user:pass@host:port)'); return; }
+  if(!/^https?:\/\//i.test(v) || !proxyHostOf(v)){ toast('❌ Galat proxy URL — http:// ya https:// se shuru hona chahiye aur host hona chahiye'); return; }
+  try{ localStorage.setItem('toing_proxy', v); }catch(e){}
+  $('proxyIn').value = '';
+  $('proxyMsg').textContent = 'Proxy save ho gaya — ab se har API call isi proxy se jayega (host: ' + proxyHostOf(v) + ').';
+  toast('Proxy save ho gaya ✓');
+  loadProxyStatus();
+}
+function removeProxy(){
+  try{ localStorage.removeItem('toing_proxy'); }catch(e){}
+  $('proxyIn').value = '';
+  $('proxyMsg').textContent = 'Proxy hata diya — ab server proxy (ya direct) use hoga.';
+  toast('Proxy remove ho gaya ✓');
+  loadProxyStatus();
+}
+
 /* ================= Init ================= */
 function renderAll(){ renderAccounts(); renderAddresses(); renderCart(); renderStats(); }
 $('apiBaseIn').value = apiBase();
+loadProxyStatus();
 $('locName').textContent = state.locName;
 $('locCoords').textContent = state.lat.toFixed(4) + ', ' + state.lng.toFixed(4);
 renderAll();

@@ -11,7 +11,8 @@ import sys
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _lib import SWIGGY_BASE, http_json, query_params, send_json, web_headers
+from _lib import (SWIGGY_BASE, http_json, proxy_override_from_headers,
+                  query_params, send_json, web_headers)
 
 
 def _paise_to_rs(v):
@@ -94,7 +95,7 @@ def _next_offset(data):
         return ""
 
 
-def fetch_all_restaurants(lat, lng, max_pages=5):
+def fetch_all_restaurants(lat, lng, max_pages=5, proxy_override=None):
     """Fetch the restaurant list to exhaustion: page 1, then follow
     Swiggy's pageOffset.nextOffset token until no new restaurants appear
     or max_pages is reached. Live probe 2026-11-26: one page returns ~28
@@ -114,7 +115,8 @@ def fetch_all_restaurants(lat, lng, max_pages=5):
         if token:
             q += "&nextOffset=" + urllib.parse.quote(token)
         url = "%s/dapi/restaurants/list/v5?%s" % (SWIGGY_BASE, q)
-        status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20)
+        status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20,
+                                          proxy_override=proxy_override)
         pages += 1
         if status is None:
             last_error = "Toing server tak request nahi pahunchi"
@@ -137,7 +139,7 @@ def fetch_all_restaurants(lat, lng, max_pages=5):
     return [seen[i] for i in order], pages, last_error
 
 
-def handle(params):
+def handle(params, proxy_override=None):
     try:
         lat = float(params.get("lat") or 17.3850)
         lng = float(params.get("lng") or 78.4867)
@@ -145,7 +147,7 @@ def handle(params):
         return 400, {"ok": False, "error": "lat/lng sahi nahi hain"}
     if not (-90 <= lat <= 90 and -180 <= lng <= 180):
         return 400, {"ok": False, "error": "lat/lng range se bahar hain"}
-    rests, pages, err = fetch_all_restaurants(lat, lng)
+    rests, pages, err = fetch_all_restaurants(lat, lng, proxy_override=proxy_override)
     if err == "swiggy_blocked":
         return 502, {"ok": False, "error": "swiggy_blocked",
                      "message": "Toing ne is waqt request block kar di — thodi der baad try karein"}
@@ -161,7 +163,8 @@ class handler(BaseHTTPRequestHandler):
         send_json(self, 200, {"ok": True})
 
     def do_GET(self):
-        status, payload = handle(query_params(self))
+        ov, _rej = proxy_override_from_headers(self)
+        status, payload = handle(query_params(self), proxy_override=ov)
         send_json(self, status, payload)
 
     def do_POST(self):

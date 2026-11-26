@@ -15,7 +15,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _lib import SWIGGY_BASE, http_json, query_params, send_json, web_headers
+from _lib import (SWIGGY_BASE, http_json, proxy_override_from_headers,
+                  query_params, send_json, web_headers)
 
 
 def _parse_menu(data):
@@ -72,7 +73,7 @@ def _parse_menu(data):
     return items
 
 
-def handle(params):
+def handle(params, proxy_override=None):
     rid = (params.get("restaurantId") or params.get("id") or "").strip()
     if not rid:
         return 400, {"ok": False, "error": "restaurantId dein"}
@@ -84,7 +85,8 @@ def handle(params):
     url = ("%s/dapi/menu/pl?page-type=REGULAR&complete-menu=true&lat=%s&lng=%s"
            "&restaurantId=%s&catalog_qa=undefined&submitAction=ENTER"
            % (SWIGGY_BASE, lat, lng, urllib.parse.quote(rid)))
-    status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20)
+    status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20,
+                                      proxy_override=proxy_override)
     if status is None:
         return 502, {"ok": False, "error": "Toing server tak request nahi pahunchi"}
     if status == 202:
@@ -102,7 +104,8 @@ class handler(BaseHTTPRequestHandler):
         send_json(self, 200, {"ok": True})
 
     def do_GET(self):
-        status, payload = handle(query_params(self))
+        ov, _rej = proxy_override_from_headers(self)
+        status, payload = handle(query_params(self), proxy_override=ov)
         send_json(self, status, payload)
 
     def do_POST(self):

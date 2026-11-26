@@ -19,12 +19,12 @@ import sys
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _lib import (calc_bill, read_json_body, send_json, valid_login,
-                  valid_mobile)
+from _lib import (calc_bill, proxy_override_from_headers, read_json_body,
+                  send_json, valid_login, valid_mobile)
 from restaurants import fetch_all_restaurants
 
 
-def _serviceability(restaurant_id, address):
+def _serviceability(restaurant_id, address, proxy_override=None):
     lat, lng = address.get("lat"), address.get("lng")
     if lat is None or lng is None:
         return ("unknown", "Address ki location (lat/lng) set nahi hai — map pin ya current location se set karein; final delivery check Toing checkout me hoga", None)
@@ -33,7 +33,7 @@ def _serviceability(restaurant_id, address):
         lng = float(lng)
     except Exception:
         return "unknown", "Address ki lat/lng sahi nahi hain", None
-    rests, _pages, err = fetch_all_restaurants(lat, lng)
+    rests, _pages, err = fetch_all_restaurants(lat, lng, proxy_override=proxy_override)
     if err or not rests:
         return "unknown", "Toing se delivery area check nahi ho paya — final check Toing checkout me hoga", None
     match = next((r for r in rests if r["id"] == str(restaurant_id)), None)
@@ -43,7 +43,7 @@ def _serviceability(restaurant_id, address):
                            "%s aapke address ke aas-paas deliver nahi karta" % restaurant_id), None
 
 
-def handle(body):
+def handle(body, proxy_override=None):
     login = body.get("login") or {}
     ok, pub_or_err = valid_login(login)
     if not ok:
@@ -88,7 +88,7 @@ def handle(body):
     except Exception:
         refer_balance = 50.0
     bill = calc_bill(item_total, coupon, refer_balance)
-    serviceable, svc_msg, match = _serviceability(restaurant_id, address)
+    serviceable, svc_msg, match = _serviceability(restaurant_id, address, proxy_override)
     if serviceable == "out_of_area":
         return 200, {"ok": True, "serviceable": "out_of_area",
                      "message": svc_msg, "bill": None, "checkoutPayload": None}
@@ -127,7 +127,8 @@ class handler(BaseHTTPRequestHandler):
         send_json(self, 200, {"ok": True})
 
     def do_POST(self):
-        status, payload = handle(read_json_body(self))
+        ov, _rej = proxy_override_from_headers(self)
+        status, payload = handle(read_json_body(self), proxy_override=ov)
         send_json(self, status, payload)
 
     def do_GET(self):

@@ -18,6 +18,7 @@ import os
 import random
 import re
 import string
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -71,6 +72,124 @@ def new_device_id():
     return "".join(random.choices("0123456789abcdef", k=16))
 
 
+# ---------------------------------------------------------------- Proxy selection + fallback
+#
+# Proxy sources, in try order for ONE request:
+#   1. per-request override (X-Toing-Proxy header, validated) — this device
+#   2. TOING_PROXIES pool (comma-separated, server env) — rotate on failure
+#   3. TOING_PROXY single default (server env)
+#   4. direct (no proxy) — ALWAYS tried last, so a dead/slow proxy can
+#      never take the backend down; it just costs one fast retry.
+# A transport failure (connection/timeout) on one route moves to the next
+# candidate. An HTTP error status (202 WAF, 400, 401...) is a real
+# response and is returned at once, never retried. Total time for one
+# call is capped by its `timeout`; proxy attempts get at most 8s each so
+# a hanging proxy cannot eat the whole serverless time budget.
+# The proxy URL / credentials are NEVER logged and NEVER returned to any
+# client — only the masked hostname (e.g. gw.proxyrise.com) is exposed.
+
+def _proxy_pool():
+    """TOING_PROXIES: comma-separated proxy pool (admin, Vercel env).
+    Returns the list in order, stripped, duplicates removed."""
+    pool = []
+    for p in (os.environ.get("TOING_PROXIES") or "").split(","):
+        p = p.strip()
+        if p and p not in pool:
+            pool.append(p)
+    return pool
+
+
+def _proxy_candidates(override=None):
+    """Ordered proxy URLs to try for one request, then None (direct).
+    Pool is capped at 3 entries per request so a long dead pool cannot
+    eat the serverless budget; the direct attempt always happens last."""
+    cands = []
+
+    def _add(p):
+        p = (p or "").strip()
+        if p and p not in cands:
+            cands.append(p)
+
+    if override:
+        _add(override)
+    for p in _proxy_pool()[:3]:
+        _add(p)
+    _add(_proxy_url())
+    cands.append(None)
+    return cands
+
+
+def _masked_proxy_host(proxy_url):
+    """Hostname only (e.g. gw.proxyrise.com) — never user/pass/port/URL."""
+    if not proxy_url:
+        return None
+    try:
+        return urllib.parse.urlparse(proxy_url).hostname or None
+    except Exception:
+        return None
+
+
+def validate_proxy_url(raw):
+    """True only for a well-formed http(s) proxy URL with a host.
+    Anything else (ftp://, bare host, empty, garbage) is rejected."""
+    if not raw or not isinstance(raw, str):
+        return False
+    try:
+        p = urllib.parse.urlparse(raw.strip())
+    except Exception:
+        return False
+    return p.scheme.lower() in ("http", "https") and bool(p.hostname)
+
+
+def proxy_override_from_headers(handler):
+    """Per-request proxy override from the X-Toing-Proxy header.
+    Returns (override_url_or_None, rejected_bool). A present-but-invalid
+    value is rejected (never used, never logged, never echoed back)."""
+    try:
+        raw = (handler.headers.get("X-Toing-Proxy") or "").strip()
+    except Exception:
+        return None, False
+    if not raw:
+        return None, False
+    if validate_proxy_url(raw):
+        return raw, False
+    return None, True
+
+
+def effective_proxy_status(override=None, rejected=False):
+    """What proxy (if any) is in effect for this request, credentials-free:
+    {configured, host (masked), source} — source is request | pool | env |
+    none. Never includes the proxy URL, user or password."""
+    cands = _proxy_candidates(override)
+    first = cands[0] if cands else None
+    if first:
+        if override and first == override:
+            src = "request"
+        elif first in _proxy_pool():
+            src = "pool"
+        else:
+            src = "env"
+        return {"configured": True, "host": _masked_proxy_host(first),
+                "source": src, "overrideRejected": bool(rejected)}
+    return {"configured": False, "host": None, "source": "none",
+            "overrideRejected": bool(rejected)}
+
+
+# Last successful route, for internals only (transport + via, no URL).
+_LAST_ROUTE = {}
+
+
+def _record_route(transport, proxy):
+    _LAST_ROUTE.clear()
+    _LAST_ROUTE.update({"transport": transport,
+                        "via": "proxy" if proxy else "direct"})
+
+
+def last_route():
+    """Copy of the last successful call's route, or {} if none yet."""
+    return dict(_LAST_ROUTE)
+
+
 # ---------------------------------------------------------------- curl_cffi (browser impersonation)
 
 _CFFI_SESSION_CLS = None  # lazy: False when curl_cffi is unavailable
@@ -90,21 +209,22 @@ def _cffi_session_cls():
     return _CFFI_SESSION_CLS or None
 
 
-def _cffi_request(method, url, headers=None, data=None, timeout=20):
-    """One HTTP call through curl_cffi (Chrome 124 impersonation: real
-    browser TLS fingerprint + browser header order), exactly like the
-    Telegram bot's curl_cffi ladder (chrome124 first, then chrome120,
-    safari17_0). Explicitly passed headers (e.g. the Toing app identity
-    on profile calls) override the impersonated defaults, same as the bot.
+def _cffi_attempt(method, url, headers=None, data=None, timeout=20, proxy=None):
+    """ONE curl_cffi attempt via `proxy` (None = direct), Chrome 124
+    impersonation: real browser TLS fingerprint + browser header order,
+    exactly like the Telegram bot's curl_cffi ladder (chrome124 first).
+    Explicitly passed headers (e.g. the Toing app identity on profile
+    calls) override the impersonated defaults, same as the bot.
     Returns (status, text, headers_dict, final_url), or None when
     curl_cffi is unavailable. Raises on transport errors — the caller
-    falls back to urllib. An HTTP error status (e.g. 202 WAF challenge)
-    is a real response, not an exception: it is returned, never retried.
-    The TOING_PROXY env var is honoured here too (same format as urllib)."""
+    moves to the next candidate. An HTTP error status (e.g. 202 WAF
+    challenge) is a real response, not an exception: returned, never
+    retried. PROVEN 2026-11-26: this does NOT clear the AWS WAF JS
+    challenge on stateful endpoints — it only makes traffic look like a
+    real browser. Menu/checkout still run in the phone's browser context."""
     cls = _cffi_session_cls()
     if cls is None:
         return None
-    proxy = _proxy_url()
     proxies = {"http": proxy, "https": proxy} if proxy else None
     sess = cls(impersonate="chrome124", timeout=timeout)
     try:
@@ -116,6 +236,56 @@ def _cffi_request(method, url, headers=None, data=None, timeout=20):
             sess.close()
         except Exception:
             pass
+
+
+def _urllib_json_attempt(method, url, headers=None, data=None, timeout=20, proxy=None):
+    """ONE urllib attempt via `proxy` (None = direct), returning
+    (status, parsed, raw, headers). Raises on transport errors; an
+    HTTPError status is a real response and is returned."""
+    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+    opener = None
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    try:
+        resp = (opener.open(req, timeout=timeout) if opener
+                else urllib.request.urlopen(req, timeout=timeout))
+        with resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(raw) if raw else None
+            except Exception:
+                parsed = None
+            return resp.status, parsed, raw, dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw) if raw else None
+        except Exception:
+            parsed = None
+        return e.code, parsed, raw, dict(e.headers)
+
+
+def _urllib_text_attempt(method, url, headers=None, timeout=20, proxy=None):
+    """ONE urllib attempt via `proxy` (None = direct), returning
+    (status, final_url, raw, headers). Raises on transport errors."""
+    req = urllib.request.Request(url, headers=headers or {}, method=method)
+    opener = None
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    try:
+        resp = (opener.open(req, timeout=timeout) if opener
+                else urllib.request.urlopen(req, timeout=timeout))
+        with resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return resp.status, resp.geturl(), raw, dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            raw = ""
+        return e.code, e.geturl(), raw, dict(e.headers)
 
 
 def _swiggy_host(url):
@@ -182,95 +352,116 @@ def _proxy_url():
 
 
 def proxy_configured():
-    return bool(_proxy_url())
+    return bool(_proxy_url() or _proxy_pool())
 
 
-def http_json(method, url, headers=None, body=None, timeout=20):
+def http_json(method, url, headers=None, body=None, timeout=20, proxy_override=None):
     """One HTTP call returning (status, parsed_json_or_None, raw_text, resp_headers).
 
     Never raises for HTTP error statuses. Returns status None only on a
     network failure. `body` is serialised as JSON when given.
-    When TOING_PROXY is set, the request goes through that proxy
-    (urllib ProxyHandler, auth from the URL); otherwise the default
-    opener is used (direct, or the runtime's own egress proxy).
-    For Swiggy/Toing hosts the call first goes through curl_cffi
+    Proxy order for this call: per-request override (proxy_override) ->
+    TOING_PROXIES pool -> TOING_PROXY -> direct. A transport failure on
+    one route moves to the next candidate; the direct attempt is always
+    tried last (time permitting), so a dead proxy never takes the call
+    down. For Swiggy/Toing hosts the call first goes through curl_cffi
     (Chrome 124 impersonation) and falls back to urllib if curl_cffi is
-    unavailable or its transport fails. Other hosts (e.g. Nominatim)
-    stay on urllib, exactly as before."""
+    unavailable or its transport fails on the direct route. Other hosts
+    (e.g. Nominatim) stay on urllib, exactly as before."""
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    if _swiggy_host(url):
-        try:
-            res = _cffi_request(method, url, headers=headers, data=data,
-                                timeout=timeout)
-        except Exception:
-            res = None
-        if res is not None:
-            status, raw, resp_headers, _final = res
+    deadline = time.monotonic() + timeout
+    last_err = None
+    tried_proxy = False
+    for proxy in _proxy_candidates(proxy_override):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.5:
+            break
+        direct = proxy is None
+        if proxy:
+            tried_proxy = True
+            attempt_timeout = min(remaining, 8)
+        else:
+            attempt_timeout = remaining
+        if _swiggy_host(url):
             try:
-                parsed = json.loads(raw) if raw else None
-            except Exception:
-                parsed = None
+                res = _cffi_attempt(method, url, headers=headers, data=data,
+                                    timeout=attempt_timeout, proxy=proxy)
+            except Exception as e:
+                last_err = e
+                if not direct:
+                    continue  # dead/slow proxy route -> next candidate
+                res = None  # direct route: urllib gets a shot below
+            if res is not None:
+                status, raw, resp_headers, _final = res
+                _record_route("curl_cffi", proxy)
+                try:
+                    parsed = json.loads(raw) if raw else None
+                except Exception:
+                    parsed = None
+                return status, parsed, raw, resp_headers
+        try:
+            status, parsed, raw, resp_headers = _urllib_json_attempt(
+                method, url, headers=headers, data=data,
+                timeout=attempt_timeout, proxy=proxy)
+            _record_route("urllib", proxy)
             return status, parsed, raw, resp_headers
-    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
-    proxy = _proxy_url()
-    opener = None
-    if proxy:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    try:
-        resp = (opener.open(req, timeout=timeout) if opener
-                else urllib.request.urlopen(req, timeout=timeout))
-        with resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            try:
-                parsed = json.loads(raw) if raw else None
-            except Exception:
-                parsed = None
-            return resp.status, parsed, raw, dict(resp.headers)
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8", errors="replace")
-        try:
-            parsed = json.loads(raw) if raw else None
-        except Exception:
-            parsed = None
-        return e.code, parsed, raw, dict(e.headers)
-    except Exception as e:
-        return None, None, "NETWORK: %s: %s" % (type(e).__name__, e), {}
+        except Exception as e:
+            last_err = e
+            continue
+    suffix = (" (proxy bhi try hua, phir direct — dono fail)"
+              if tried_proxy else "")
+    return None, None, "NETWORK: %s: %s%s" % (
+        type(last_err).__name__ if last_err else "Timeout",
+        last_err or "no time left", suffix), {}
 
 
-def http_text(method, url, headers=None, timeout=20):
+def http_text(method, url, headers=None, timeout=20, proxy_override=None):
     """Like http_json but returns raw text (for HTML pages) and the final
     URL after redirects. Returns (status, final_url, raw_text, headers).
     Tries curl_cffi (Chrome 124 impersonation) first — share links and
     short URLs often serve bot challenges to plain urllib — and falls
-    back to urllib if curl_cffi is unavailable or its transport fails."""
-    try:
-        res = _cffi_request(method, url, headers=headers, timeout=timeout)
-    except Exception:
-        res = None
-    if res is not None:
-        status, raw, resp_headers, final_url = res
-        return status, final_url, raw, resp_headers
-    req = urllib.request.Request(url, headers=headers or {}, method=method)
-    proxy = _proxy_url()
-    opener = None
-    if proxy:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    try:
-        resp = (opener.open(req, timeout=timeout) if opener
-                else urllib.request.urlopen(req, timeout=timeout))
-        with resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            return resp.status, resp.geturl(), raw, dict(resp.headers)
-    except urllib.error.HTTPError as e:
+    back to urllib if curl_cffi is unavailable or its transport fails on
+    the direct route. Same proxy order as http_json (override -> pool ->
+    env -> direct); a dead proxy route is skipped, direct is always
+    tried last, so a dead proxy never kills link resolving."""
+    deadline = time.monotonic() + timeout
+    last_err = None
+    tried_proxy = False
+    for proxy in _proxy_candidates(proxy_override):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.5:
+            break
+        direct = proxy is None
+        if proxy:
+            tried_proxy = True
+            attempt_timeout = min(remaining, 8)
+        else:
+            attempt_timeout = remaining
         try:
-            raw = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            raw = ""
-        return e.code, e.geturl(), raw, dict(e.headers)
-    except Exception as e:
-        return None, url, "NETWORK: %s: %s" % (type(e).__name__, e), {}
+            res = _cffi_attempt(method, url, headers=headers,
+                                timeout=attempt_timeout, proxy=proxy)
+        except Exception as e:
+            last_err = e
+            if not direct:
+                continue  # dead/slow proxy route -> next candidate
+            res = None  # direct route: urllib gets a shot below
+        if res is not None:
+            status, raw, resp_headers, final_url = res
+            _record_route("curl_cffi", proxy)
+            return status, final_url, raw, resp_headers
+        try:
+            status, final_url, raw, resp_headers = _urllib_text_attempt(
+                method, url, headers=headers, timeout=attempt_timeout, proxy=proxy)
+            _record_route("urllib", proxy)
+            return status, final_url, raw, resp_headers
+        except Exception as e:
+            last_err = e
+            continue
+    suffix = (" (proxy bhi try hua, phir direct — dono fail)"
+              if tried_proxy else "")
+    return None, url, "NETWORK: %s: %s%s" % (
+        type(last_err).__name__ if last_err else "Timeout",
+        last_err or "no time left", suffix), {}
 
 
 # ---------------------------------------------------------------- JWT / login JSON
@@ -528,7 +719,7 @@ def valid_login(login):
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
 
 
-def reverse_geocode(lat, lng):
+def reverse_geocode(lat, lng, proxy_override=None):
     """lat/lng -> real formatted address via OpenStreetMap Nominatim.
     Returns (True, {lat, lng, text, city, area, road, postcode}) or
     (False, {error}). No invented address, ever."""
@@ -544,7 +735,8 @@ def reverse_geocode(lat, lng):
     status, data, _raw, _h = http_json(
         "GET", url,
         headers={"User-Agent": "ToingMini/1.0 (toing-mini-order-bot)",
-                 "Accept": "application/json"}, timeout=15)
+                 "Accept": "application/json"}, timeout=15,
+        proxy_override=proxy_override)
     if status != 200 or not isinstance(data, dict) or not data.get("display_name"):
         return False, {"error": "Address resolve nahi hua (Nominatim HTTP %s)" % status}
     addr = data.get("address") or {}
@@ -588,7 +780,7 @@ def _latlng_from_text(text):
     return None, None
 
 
-def resolve_shared_link(url):
+def resolve_shared_link(url, proxy_override=None):
     """Follow a pasted share link FOR REAL and resolve it to an address.
 
     Follows redirects server-side, then looks for real coordinates in the
@@ -601,7 +793,8 @@ def resolve_shared_link(url):
         return False, {"error": "Sahi link paste karein (http:// ya https:// se shuru hona chahiye)"}
     lat, lng = _latlng_from_text(url)
     status, final_url, raw, _h = http_text(
-        "GET", url, headers=web_headers(), timeout=20)
+        "GET", url, headers=web_headers(), timeout=20,
+        proxy_override=proxy_override)
     if status is None:
         return False, {"error": "Link khul nahi paya: %s" % (raw or "")[:120]}
     if lat is None:
@@ -610,7 +803,7 @@ def resolve_shared_link(url):
         lat, lng = _latlng_from_text(raw or "")
     if lat is None:
         return False, {"error": "Is link se location nahi mili — link me lat/lng nahi hai. Address manually add karein ya current location use karein"}
-    ok, geo = reverse_geocode(lat, lng)
+    ok, geo = reverse_geocode(lat, lng, proxy_override=proxy_override)
     if not ok:
         return False, geo
     geo["sourceUrl"] = final_url or url

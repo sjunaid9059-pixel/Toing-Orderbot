@@ -17,11 +17,12 @@ from http.server import BaseHTTPRequestHandler
 sys.path.insert(0, os.path.dirname(__file__))
 from _lib import (TOING_BASE_URL, TOING_PACKAGE, _extract_token_deep,
                   _extract_token_from_headers, build_toing_login_json,
-                  http_json, jwt_user_id, public_login_json, random_user_name,
-                  read_json_body, send_json, toing_headers, valid_mobile)
+                  http_json, jwt_user_id, proxy_override_from_headers,
+                  public_login_json, random_user_name, read_json_body,
+                  send_json, toing_headers, valid_mobile)
 
 
-def _verify_once(mobile, otp, tid, sid, device_id):
+def _verify_once(mobile, otp, tid, sid, device_id, proxy_override=None):
     """One real verify call. Returns (ok, login_dict_or_None, error_str, raw_data)."""
     headers = toing_headers(device_id)
     headers["tid"] = tid or ""
@@ -40,7 +41,8 @@ def _verify_once(mobile, otp, tid, sid, device_id):
         "otp": otp,
     }
     url = "%s/login/verify?otp_source=Sms-automatic" % TOING_BASE_URL
-    status, data, raw, resp_headers = http_json("POST", url, headers=headers, body=body, timeout=20)
+    status, data, raw, resp_headers = http_json("POST", url, headers=headers, body=body, timeout=20,
+                                               proxy_override=proxy_override)
     if status is None:
         return False, None, "Toing auth server tak request nahi pahunchi", None
     if status not in (200, 201):
@@ -61,7 +63,7 @@ def _verify_once(mobile, otp, tid, sid, device_id):
     return True, login, "", data
 
 
-def _complete_new_account(mobile, login, device_id):
+def _complete_new_account(mobile, login, device_id, proxy_override=None):
     """Try /signup with a random name to turn a pre-registration session
     into a real account. Returns (ok, login). Proven: /signup is the only
     endpoint that exists for this; it validates the name strictly."""
@@ -74,7 +76,8 @@ def _complete_new_account(mobile, login, device_id):
     cur = dict(login)
     for body in ({"name": name}, {"name": name, "mobile": mobile}, {"name": name, "email": ""}):
         status, data, _raw, _h = http_json(
-            "POST", "%s/signup" % TOING_BASE_URL, headers=headers, body=body, timeout=10)
+            "POST", "%s/signup" % TOING_BASE_URL, headers=headers, body=body, timeout=10,
+            proxy_override=proxy_override)
         if status not in (200, 201, 204) or not isinstance(data, dict):
             continue
         msg = str(data.get("statusMessage") or data.get("message") or "")
@@ -105,9 +108,10 @@ def _complete_new_account(mobile, login, device_id):
     return False, cur
 
 
-def _send_fresh_otp(mobile, device_id):
+def _send_fresh_otp(mobile, device_id, proxy_override=None):
     url = "%s/sms_otp?mobile=%s" % (TOING_BASE_URL, mobile)
-    status, data, _raw, _h = http_json("GET", url, headers=toing_headers(device_id), timeout=20)
+    status, data, _raw, _h = http_json("GET", url, headers=toing_headers(device_id), timeout=20,
+                                      proxy_override=proxy_override)
     if status is None or not isinstance(data, dict) or data.get("statusCode") != 0:
         return None
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
@@ -118,7 +122,7 @@ def _send_fresh_otp(mobile, device_id):
     }
 
 
-def handle(body):
+def handle(body, proxy_override=None):
     mobile = valid_mobile(body.get("mobile"))
     otp = str(body.get("otp") or "").strip()
     tid = str(body.get("tid") or "")
@@ -131,7 +135,7 @@ def handle(body):
     if not tid or not device_id:
         return 400, {"ok": False,
                      "error": "OTP session expire ho gaya — dobara OTP bhejein"}
-    ok, login, err, _data = _verify_once(mobile, otp, tid, sid, device_id)
+    ok, login, err, _data = _verify_once(mobile, otp, tid, sid, device_id, proxy_override)
     if not ok:
         return 400, {"ok": False, "error": "OTP verify nahi hua: %s" % err}
     pub = public_login_json(login)
@@ -140,7 +144,7 @@ def handle(body):
         return 200, {"ok": True, "registered": True, "login": pub,
                      "message": "Login ho gaya — account save ho gaya"}
     # Pre-registration session (customerId '0'): try to complete the account.
-    ok2, login2 = _complete_new_account(mobile, login, device_id)
+    ok2, login2 = _complete_new_account(mobile, login, device_id, proxy_override)
     if ok2:
         pub2 = public_login_json(login2)
         if pub2["customerId"]:
@@ -148,7 +152,7 @@ def handle(body):
                          "message": "Naya account ban gaya — login ho gaya"}
     # Signup did not produce a real customerId: automatic round 2, exactly
     # like the Telegram bot's Firebase flow — fresh OTP, verify again.
-    fresh = _send_fresh_otp(mobile, device_id)
+    fresh = _send_fresh_otp(mobile, device_id, proxy_override)
     if fresh:
         return 200, {"ok": False, "round2": True,
                      "tid": fresh["tid"], "sid": fresh["sid"],
@@ -163,7 +167,8 @@ class handler(BaseHTTPRequestHandler):
         send_json(self, 200, {"ok": True})
 
     def do_POST(self):
-        status, payload = handle(read_json_body(self))
+        ov, _rej = proxy_override_from_headers(self)
+        status, payload = handle(read_json_body(self), proxy_override=ov)
         send_json(self, status, payload)
 
     def do_GET(self):

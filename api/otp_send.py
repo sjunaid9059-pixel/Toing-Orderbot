@@ -11,18 +11,20 @@ import sys
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _lib import (TOING_BASE_URL, http_json, new_device_id, read_json_body,
-                  send_json, toing_headers, valid_mobile)
+from _lib import (TOING_BASE_URL, http_json, new_device_id,
+                  proxy_override_from_headers, read_json_body, send_json,
+                  toing_headers, valid_mobile)
 
 
-def handle(body):
+def handle(body, proxy_override=None):
     mobile = valid_mobile(body.get("mobile"))
     if not mobile:
         return 400, {"ok": False,
                      "error": "Sahi 10-digit mobile number daalein (6-9 se shuru hona chahiye)"}
     device_id = new_device_id()
     url = "%s/sms_otp?mobile=%s" % (TOING_BASE_URL, mobile)
-    status, data, raw, _hdrs = http_json("GET", url, headers=toing_headers(device_id), timeout=20)
+    status, data, raw, _hdrs = http_json("GET", url, headers=toing_headers(device_id), timeout=20,
+                                        proxy_override=proxy_override)
     if status is None:
         return 502, {"ok": False,
                      "error": "Toing auth server tak request nahi pahunchi: %s" % raw[:120]}
@@ -45,7 +47,8 @@ class handler(BaseHTTPRequestHandler):
         send_json(self, 200, {"ok": True})
 
     def do_POST(self):
-        status, payload = handle(read_json_body(self))
+        ov, _rej = proxy_override_from_headers(self)
+        status, payload = handle(read_json_body(self), proxy_override=ov)
         send_json(self, status, payload)
 
     def do_GET(self):

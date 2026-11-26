@@ -15,19 +15,21 @@ import sys
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _lib import (read_json_body, resolve_shared_link, reverse_geocode,
-                  send_json)
+from _lib import (proxy_override_from_headers, read_json_body,
+                  resolve_shared_link, reverse_geocode, send_json)
 
 
-def handle(body):
+def handle(body, proxy_override=None):
     op = (body.get("op") or "").strip().lower()
     if op == "reverse":
-        ok, out = reverse_geocode(body.get("lat"), body.get("lng"))
+        ok, out = reverse_geocode(body.get("lat"), body.get("lng"),
+                                  proxy_override=proxy_override)
         if not ok:
             return 400, {"ok": False, "error": out.get("error") or "Address resolve nahi hua"}
         return 200, {"ok": True, "op": "reverse", **out}
     if op == "resolve":
-        ok, out = resolve_shared_link(body.get("url") or body.get("link") or "")
+        ok, out = resolve_shared_link(body.get("url") or body.get("link") or "",
+                                      proxy_override=proxy_override)
         if not ok:
             return 400, {"ok": False, "error": out.get("error") or "Link resolve nahi hua"}
         return 200, {"ok": True, "op": "resolve", **out}
@@ -39,7 +41,8 @@ class handler(BaseHTTPRequestHandler):
         send_json(self, 200, {"ok": True})
 
     def do_POST(self):
-        status, payload = handle(read_json_body(self))
+        ov, _rej = proxy_override_from_headers(self)
+        status, payload = handle(read_json_body(self), proxy_override=ov)
         send_json(self, status, payload)
 
     def do_GET(self):

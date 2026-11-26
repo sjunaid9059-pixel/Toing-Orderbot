@@ -11,7 +11,8 @@ import sys
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _lib import SWIGGY_BASE, http_json, read_json_body, send_json, valid_login, web_headers
+from _lib import (SWIGGY_BASE, http_json, proxy_override_from_headers,
+                  read_json_body, send_json, valid_login, web_headers)
 
 
 def _norm_order(o):
@@ -45,7 +46,7 @@ def _norm_order(o):
     }
 
 
-def handle(body):
+def handle(body, proxy_override=None):
     login = body.get("login") or body
     ok, pub_or_err = valid_login(login)
     if not ok:
@@ -66,7 +67,8 @@ def handle(body):
     headers["tid"] = pub["tid"]
     headers["sid"] = pub["sid"]
     status, data, _raw, _h = http_json(
-        "GET", "%s/dapi/order/all" % SWIGGY_BASE, headers=headers, timeout=20)
+        "GET", "%s/dapi/order/all" % SWIGGY_BASE, headers=headers, timeout=20,
+        proxy_override=proxy_override)
     if status is None:
         return 502, {"ok": False, "error": "Toing server tak request nahi pahunchi"}
     if status == 202:
@@ -102,7 +104,8 @@ class handler(BaseHTTPRequestHandler):
         send_json(self, 200, {"ok": True})
 
     def do_POST(self):
-        status, payload = handle(read_json_body(self))
+        ov, _rej = proxy_override_from_headers(self)
+        status, payload = handle(read_json_body(self), proxy_override=ov)
         send_json(self, status, payload)
 
     def do_GET(self):

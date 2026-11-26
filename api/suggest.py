@@ -10,10 +10,11 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _lib import SWIGGY_BASE, http_json, query_params, send_json, web_headers
+from _lib import (SWIGGY_BASE, http_json, proxy_override_from_headers,
+                  query_params, send_json, web_headers)
 
 
-def handle(params):
+def handle(params, proxy_override=None):
     q = (params.get("q") or "").strip()
     if not q:
         return 400, {"ok": False, "error": "q likhein"}
@@ -24,7 +25,8 @@ def handle(params):
         return 400, {"ok": False, "error": "lat/lng sahi nahi hain"}
     url = ("%s/dapi/restaurants/search/suggest?lat=%s&lng=%s&str=%s&trackingId=toing-mini"
            % (SWIGGY_BASE, lat, lng, urllib.parse.quote(q)))
-    status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20)
+    status, data, _raw, _h = http_json("GET", url, headers=web_headers(), timeout=20,
+                                      proxy_override=proxy_override)
     if status is None:
         return 502, {"ok": False, "error": "Toing server tak request nahi pahunchi"}
     if status == 202:
@@ -52,7 +54,8 @@ class handler(BaseHTTPRequestHandler):
         send_json(self, 200, {"ok": True})
 
     def do_GET(self):
-        status, payload = handle(query_params(self))
+        ov, _rej = proxy_override_from_headers(self)
+        status, payload = handle(query_params(self), proxy_override=ov)
         send_json(self, status, payload)
 
     def do_POST(self):
