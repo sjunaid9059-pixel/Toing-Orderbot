@@ -104,6 +104,68 @@ def _read_body(handler):
         return None, "body is not JSON"
 
 
+def _connect_probe(proxy_url):
+    """Raw CONNECT to the proxy gateway, returning its exact reply.
+
+    proxy_url is the normalized http://user:pass@host:port. Sends two
+    CONNECTs: one without auth, one with Basic auth. Returns the raw
+    response text of each (up to 2KB), with the password and the
+    base64(user:pass) token redacted. Never returns credentials."""
+    import base64
+    import socket
+    out = {"ok": True, "probe": "connect"}
+    if not proxy_url:
+        out.update({"ok": False, "error": "no proxy override given"})
+        return out
+    try:
+        u = urllib.parse.urlparse(proxy_url)
+        host, port = u.hostname, u.port or 443
+        user = urllib.parse.unquote(u.username or "")
+        pwd = urllib.parse.unquote(u.password or "")
+    except Exception:
+        out.update({"ok": False, "error": "bad proxy"})
+        return out
+
+    def _redact(text):
+        for secret in (pwd, base64.b64encode(
+                ("%s:%s" % (user, pwd)).encode()).decode()):
+            if secret and secret in text:
+                text = text.replace(secret, "***")
+        return text
+
+    def _one(with_auth):
+        try:
+            s = socket.create_connection((host, port), timeout=8)
+            s.settimeout(8)
+            lines = ["CONNECT rome.api.flipkart.net:443 HTTP/1.1",
+                     "Host: rome.api.flipkart.net:443"]
+            if with_auth:
+                cred = base64.b64encode(
+                    ("%s:%s" % (user, pwd)).encode()).decode()
+                lines.append("Proxy-Authorization: Basic " + cred)
+            lines += ["Proxy-Connection: Keep-Alive", "", ""]
+            s.sendall("\r\n".join(lines).encode())
+            data = b""
+            try:
+                while len(data) < 2048:
+                    chunk = s.recv(2048)
+                    if not chunk:
+                        break
+                    data += chunk
+                    if b"\r\n\r\n" in data and len(data) > 200:
+                        break
+            except Exception:
+                pass
+            s.close()
+            return _redact(data.decode("utf-8", errors="replace")[:2048])
+        except Exception as e:
+            return "%s: %s" % (type(e).__name__, str(e)[:120])
+
+    out["noAuth"] = _one(False)
+    out["withAuth"] = _one(True)
+    return out
+
+
 class handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         send_json(self, 200, {"ok": True})
@@ -159,6 +221,13 @@ class handler(BaseHTTPRequestHandler):
             if not override:
                 send_json(self, 400, {"ok": False, "error": "bad proxy"})
                 return
+        # Raw CONNECT probe (key-gated): open a plain socket to the proxy
+        # gateway, send CONNECT with/without Basic auth, and return the
+        # gateway's exact reply (credentials redacted). This is the only
+        # way to see WHY the gateway 407s — curl/urllib hide the body.
+        if payload.get("probe") == "connect":
+            send_json(self, 200, _connect_probe(override))
+            return
         status, data, raw, resp_headers, via_proxy, attempts = fk_http_json(
             method, url, headers=headers, body=body, timeout=20,
             proxy_override=override)
