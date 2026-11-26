@@ -237,13 +237,14 @@ ol.steps{padding-left:20px;font-size:14px;line-height:1.65}
   <h2 class="sec">Tools</h2>
   <div class="card row">
     <div style="font-size:30px">💸</div>
-    <div class="grow"><b>Refer Cash — ₹50</b><div class="muted">₹100+ ke cart pe auto-apply hota hai. Balance: <b style="color:var(--ink)" id="referBalTxt">₹50</b></div></div>
+    <div class="grow"><b>Refer Cash — ₹50</b><div class="muted">New account pe ₹50 refer cash — ₹100+ ke cart pe auto-apply hota hai. Balance: <b style="color:var(--ink)" id="referBalTxt">₹50</b></div></div>
     <span class="tag">ACTIVE</span>
   </div>
   <div class="card">
     <b>🎟️ Coupons</b>
-    <div class="row" style="margin-top:10px"><span class="kbd">BHIMNEW</span><span class="muted grow">₹99+ cart pe ₹49.99 off (UPI payment)</span><button class="mini btn-ghost" onclick="applyCoupon('BHIMNEW');go('cart')">Apply</button></div>
-    <div class="row" style="margin-top:8px"><span class="kbd">TOING50</span><span class="muted grow">₹149+ cart pe 50% off, max ₹80</span><button class="mini btn-ghost" onclick="applyCoupon('TOING50');go('cart')">Apply</button></div>
+    <div class="row" style="margin-top:10px"><span class="kbd">BHIMNEW</span><span class="muted grow">₹99+ cart pe ₹50 off via BHIM UPI (Swiggy ₹49.99 apply karta hai)</span><button class="mini btn-ghost" onclick="applyCoupon('BHIMNEW');go('cart')">Apply</button></div>
+    <div class="row" style="margin-top:8px"><span class="kbd">PAYTMUPI</span><span class="muted grow">₹100+ pe ₹50 cashback Paytm UPI se — cashback hai, bill se nahi kat-ta</span><button class="mini btn-ghost" onclick="applyCoupon('PAYTMUPI');go('cart')">Apply</button></div>
+    <div class="row" style="margin-top:8px"><span class="muted grow">Aur koi coupon code ho to cart me type karein — Swiggy checkout pe asli validation hoga.</span></div>
   </div>
   <div class="card">
     <b>⚙️ Backend (Vercel)</b>
@@ -387,19 +388,20 @@ function cartRestId(){ return state.cart.restId; }
 function waitMs(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
 function debounce(fn, ms){ var t; return function(){ var a=arguments, c=this; clearTimeout(t); t=setTimeout(function(){ fn.apply(c, a); }, ms); }; }
 
-/* ================= Bill logic (backend jaisi hi — BHIMNEW/TOING50/refer/GST 5%) ================= */
+/* ================= Bill logic (backend jaisi hi — BHIMNEW/PAYTMUPI cashback/refer/GST 5%) ================= */
 function bill(){
   var total = 0;
   for(var k in state.cart.items){ var it = state.cart.items[k]; total += it.price * it.qty; }
   total = Math.round(total*100)/100;
-  var couponOff = 0, couponMsg = '';
+  var couponOff = 0, couponMsg = '', cashback = 0;
   if(state.coupon === 'BHIMNEW'){ if(total >= 99){ couponOff = 49.99; } else { couponMsg = 'BHIMNEW ke liye ₹' + (99-total) + ' aur add karein (min ₹99)'; } }
-  if(state.coupon === 'TOING50'){ if(total >= 149){ couponOff = Math.min(80, Math.round(total*0.5*100)/100); } else { couponMsg = 'TOING50 ke liye ₹' + (149-total) + ' aur add karein (min ₹149)'; } }
+  if(state.coupon === 'PAYTMUPI'){ if(total >= 100){ cashback = 50; couponMsg = '₹50 cashback Paytm me milega (bill se nahi kat-ta)'; } else { couponMsg = 'PAYTMUPI ke liye ₹' + (100-total) + ' aur add karein (min ₹100)'; } }
+  if(state.coupon && state.coupon !== 'BHIMNEW' && state.coupon !== 'PAYTMUPI'){ couponMsg = 'Coupon Swiggy checkout pe validate hoga — wahan se asli discount lagega'; }
   var referOff = (total >= 100 && state.referBalance > 0) ? Math.min(50, state.referBalance) : 0;
   var referMsg = (total > 0 && total < 100) ? 'Refer Cash ₹50 sirf ₹100+ cart pe lagta hai' : '';
   var gst = Math.round(Math.max(0, total - couponOff - referOff) * 0.05 * 100)/100;
   var toPay = Math.round(Math.max(0, total - couponOff - referOff + gst)*100)/100;
-  return {total: total, couponOff: couponOff, couponMsg: couponMsg, referOff: referOff, referMsg: referMsg, gst: gst, deliveryFee: null, deliveryFeePending: true, toPay: toPay};
+  return {total: total, couponOff: couponOff, couponMsg: couponMsg, cashback: cashback, referOff: referOff, referMsg: referMsg, gst: gst, deliveryFee: null, deliveryFeePending: true, toPay: toPay};
 }
 
 /* ================= Accounts ================= */
@@ -667,7 +669,7 @@ function renderSearch(){
   $('restList').innerHTML = rests.length ? rests.map(function(R){ return restCard(R); }).join('') : '<div class="card muted">Is location pe koi restaurant nahi mila.</div>';
 }
 function restCard(R){
-  return '<div class="card" style="cursor:pointer" onclick="openMenu(\'' + R.id + '\')"><div class="row">' + restImg(R) + '<div class="grow"><b style="font-size:16px">' + esc(R.name) + '</b><div class="muted">' + esc(R.areaName || R.locality || '') + ' • ' + esc((R.cuisines||[]).slice(0,3).join(', ')) + '</div><div class="muted">' + esc(R.slaString || '') + (R.distanceKm ? ' • ' + R.distanceKm + ' km' : '') + (R.costForTwo ? ' • ' + money(R.costForTwo) + ' for two' : '') + '</div>' + (R.discountHeader ? '<div style="color:#1a7a37;font-weight:700;font-size:13px">' + esc(R.discountHeader) + ' ' + esc(R.discountSubHeader||'') + '</div>' : '') + '</div><span class="tag">★ ' + esc(R.avgRatingString || R.avgRating || '—') + '</span></div></div>';
+  return '<div class="card" style="cursor:pointer" onclick="openMenu(\'' + R.id + '\')"><div class="row">' + restImg(R) + '<div class="grow"><b style="font-size:16px">' + esc(R.name) + '</b>' + (R.isOpen === false ? ' <span class="tag" style="background:var(--red-bg);color:var(--red)">Band hai</span>' : '') + '<div class="muted">' + esc(R.areaName || R.locality || '') + ' • ' + esc((R.cuisines||[]).slice(0,3).join(', ')) + '</div><div class="muted">' + esc(R.slaString || '') + (R.distanceKm ? ' • ' + R.distanceKm + ' km' : '') + (R.costForTwo ? ' • ' + money(R.costForTwo) + ' for two' : '') + '</div>' + (R.discountHeader ? '<div style="color:#1a7a37;font-weight:700;font-size:13px">' + esc(R.discountHeader) + ' ' + esc(R.discountSubHeader||'') + '</div>' : '') + '</div><span class="tag">★ ' + esc(R.avgRatingString || R.avgRating || '—') + '</span></div></div>';
 }
 
 /* ================= Menu (real dishes via search; menu/pl blocked hota hai to fallback) ================= */
@@ -737,6 +739,7 @@ function renderCart(){
     $('billBox').innerHTML = '<div class="card"><b style="font-size:16px">Bill Details</b>'
     + '<div class="bill-row" style="margin-top:8px"><span>Item Total</span><span>' + money(eff.total || eff.itemTotal) + '</span></div>'
     + (eff.couponOff ? '<div class="bill-row"><span>Coupon (' + esc(state.coupon || '') + ')</span><span class="neg">− ' + money(eff.couponOff) + '</span></div>' : '')
+    + (eff.cashback ? '<div class="bill-row"><span>Cashback (' + esc(state.coupon || '') + ')</span><span style="color:#1a7a37;font-weight:700">+ ' + money(eff.cashback) + ' Paytm me milega</span></div>' : '')
     + (eff.referOff ? '<div class="bill-row"><span>Refer Cash</span><span class="neg">− ' + money(eff.referOff) + '</span></div>' : '')
     + (eff.referMsg ? '<div class="bill-row"><span class="muted">' + esc(eff.referMsg) + '</span><span></span></div>' : '')
     + '<div class="bill-row"><span>Delivery Fee</span><span>' + (eff.deliveryFee != null ? money(eff.deliveryFee) : '<span class="muted">Swiggy checkout pe confirm hoga</span>') + '</span></div>'
@@ -751,8 +754,10 @@ function renderCart(){
 }
 function applyCoupon(c){
   c = (c || '').trim().toUpperCase();
-  if(c !== 'BHIMNEW' && c !== 'TOING50'){ toast('Ye coupon valid nahi hai'); return; }
-  state.coupon = c; state.prepared = null; saveState(); renderAll(); toast('Coupon ' + c + ' apply ho gaya 🎟️');
+  if(!c){ toast('Coupon code likhein'); return; }
+  state.coupon = c; state.prepared = null; saveState(); renderAll();
+  if(c === 'BHIMNEW' || c === 'PAYTMUPI'){ toast('Coupon ' + c + ' apply ho gaya 🎟️'); }
+  else { toast('Coupon ' + c + ' note kar liya — Swiggy checkout pe asli validation hoga'); }
 }
 function removeCoupon(){ state.coupon = null; state.prepared = null; saveState(); renderAll(); }
 function toggleIncog(){ var b = $('incog'); var on = b.getAttribute('aria-checked') !== 'true'; b.setAttribute('aria-checked', on); $('incogTxt').textContent = on ? 'On — order history se hidden rahega' : 'Off — order history me dikhega'; }
@@ -799,6 +804,7 @@ async function openPay(){
   var b = bill();
   $('paySummary').innerHTML = '<div class="bill-row"><span>' + esc(state.cart.restName || '') + '</span><span>' + cartCount() + ' items</span></div><div class="bill-row"><span>Item Total</span><span>' + money(b.total) + '</span></div>'
     + (b.couponOff ? '<div class="bill-row"><span>Coupon off</span><span class="neg">− ' + money(b.couponOff) + '</span></div>' : '')
+    + (b.cashback ? '<div class="bill-row"><span>Cashback (' + esc(state.coupon || '') + ')</span><span style="color:#1a7a37;font-weight:700">+ ' + money(b.cashback) + ' Paytm me milega</span></div>' : '')
     + (b.referOff ? '<div class="bill-row"><span>Refer Cash</span><span class="neg">− ' + money(b.referOff) + '</span></div>' : '')
     + '<div class="bill-row total"><span>Payable</span><span>' + money(b.toPay) + '</span></div>';
   setPm(state.pm); $('payStatus').innerHTML = ''; $('qrBox').innerHTML = '';
@@ -821,6 +827,7 @@ async function openPay(){
     var eb = d.bill;
     $('paySummary').innerHTML = '<div class="bill-row"><span>' + esc(state.cart.restName || '') + '</span><span>' + cartCount() + ' items</span></div><div class="bill-row"><span>Item Total</span><span>' + money(eb.itemTotal) + '</span></div>'
       + (eb.couponOff ? '<div class="bill-row"><span>Coupon off</span><span class="neg">− ' + money(eb.couponOff) + '</span></div>' : '')
+      + (eb.cashback ? '<div class="bill-row"><span>Cashback (' + esc(state.coupon || '') + ')</span><span style="color:#1a7a37;font-weight:700">+ ' + money(eb.cashback) + ' Paytm me milega</span></div>' : '')
       + (eb.referOff ? '<div class="bill-row"><span>Refer Cash</span><span class="neg">− ' + money(eb.referOff) + '</span></div>' : '')
       + '<div class="bill-row"><span>Delivery Fee</span><span>' + (eb.deliveryFee != null ? money(eb.deliveryFee) : '<span class="muted">checkout pe confirm</span>') + '</span></div>'
       + '<div class="bill-row"><span>GST (5%)</span><span>' + money(eb.gst) + '</span></div>'

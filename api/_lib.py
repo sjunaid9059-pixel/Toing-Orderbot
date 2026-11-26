@@ -31,9 +31,18 @@ BROWSER_UA = ("Mozilla/5.0 (Linux; Android 13; Pixel 8) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
 
 COUPONS = {
-    "BHIMNEW": {"off": 49.99, "min": 99, "desc": "BHIMNEW: Rs 49.99 off on Rs 99+ (UPI)"},
-    "TOING50": {"pct": 0.5, "max": 80, "min": 149, "desc": "TOING50: 50% off up to Rs 80 on Rs 149+"},
+    # BHIMNEW — verified live: flat Rs 50 off on orders above Rs 99 via BHIM UPI,
+    # once per user (Swiggy applies Rs 49.99). Sources + user's own screenshot.
+    "BHIMNEW": {"off": 49.99, "min": 99, "desc": "BHIMNEW: Rs 50 off on Rs 99+ via BHIM UPI (Swiggy applies Rs 49.99)"},
+    # PAYTMUPI — verified: flat Rs 50 CASHBACK with Paytm UPI / UPI Lite on
+    # payments above Rs 100, once across Food/Instamart/Dineout/Toing.
+    # Cashback hai — bill se nahi kat-ta, Paytm me wapas milta hai.
+    "PAYTMUPI": {"cashback": 50, "min": 100, "desc": "PAYTMUPI: Rs 50 cashback on Paytm UPI, min Rs 100 (cashback, bill se nahi kat-ta)"},
 }
+# NOTE: TOING50 removed 2026-11-26 — no evidence it is a real Swiggy/Toing
+# coupon anywhere; it came from the old demo file. Only verified coupons
+# get a local bill discount. Any other code the user types is NOT rejected
+# locally — it is passed to Swiggy checkout, which validates it for real.
 REFER_CASH = 50.0
 REFER_MIN_CART = 100.0
 GST_RATE = 0.05  # Swiggy charges 5% GST on the discounted food total
@@ -252,8 +261,11 @@ def public_login_json(acc):
 
 def calc_bill(item_total, coupon=None, refer_balance=REFER_CASH):
     """Exact discount logic (verified against the reference flow):
-    BHIMNEW -49.99 on cart >= 99; TOING50 50% off max 80 on cart >= 149;
-    refer cash 50 only on cart >= 100; GST 5% on the discounted total.
+    BHIMNEW -49.99 on cart >= 99 (flat Rs 50 off above Rs 99 via BHIM UPI);
+    PAYTMUPI = Rs 50 cashback on Paytm UPI, min Rs 100 (NOT a bill discount);
+    refer cash 50 only on cart >= 100 (new accounts); GST 5% on the
+    discounted total. Unknown coupon codes are NOT rejected here — Swiggy
+    checkout validates them for real, so the bill carries a note instead.
     Delivery fee is NOT invented here — the caller fills it from Swiggy's
     feeDetails when available, otherwise it stays None (confirmed at
     browser checkout)."""
@@ -261,18 +273,20 @@ def calc_bill(item_total, coupon=None, refer_balance=REFER_CASH):
     coupon = (coupon or "").strip().upper()
     coupon_off = 0.0
     coupon_msg = ""
+    cashback = 0.0
     if coupon in COUPONS:
         rule = COUPONS[coupon]
         if item_total >= rule["min"]:
             if "off" in rule:
                 coupon_off = rule["off"]
-            else:
-                coupon_off = min(rule["max"], round(item_total * rule["pct"], 2))
+            elif "cashback" in rule:
+                cashback = rule["cashback"]
+                coupon_msg = "Rs %s cashback Paytm me milega (bill se nahi kat-ta)" % _inr(cashback)
         else:
             coupon_msg = "%s ke liye Rs %s aur add karein (min Rs %s)" % (
                 coupon, _inr(rule["min"] - item_total), rule["min"])
     elif coupon:
-        coupon_msg = "Ye coupon valid nahi hai"
+        coupon_msg = "Coupon Swiggy checkout pe validate hoga — wahan se asli discount lagega"
     refer_off = 0.0
     refer_msg = ""
     if item_total >= REFER_MIN_CART and float(refer_balance or 0) > 0:
@@ -286,6 +300,7 @@ def calc_bill(item_total, coupon=None, refer_balance=REFER_CASH):
         "coupon": coupon or None,
         "couponOff": round(coupon_off, 2),
         "couponMsg": coupon_msg,
+        "cashback": round(cashback, 2),
         "referOff": round(refer_off, 2),
         "referMsg": refer_msg,
         "gst": gst,
