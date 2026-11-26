@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="light dark" />
+<link rel="icon" href="data:," />
+<title>Toing Mini — Order Bot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  --green:#0b3d2e; --green2:#0e4d39; --green-soft:#e6f2ec;
+  --cream:#fdf9ec; --paper:#fffdf4; --ink:#12211b; --muted:#6b7a72;
+  --gold:#e9c46a; --blue:#0ea5e9; --rust:#c65a3a; --red:#c0392b; --red-bg:#fdecea;
+  --line:#e9e2cd; --card-shadow:0 2px 14px rgba(20,40,30,.07);
+  --nav-h:74px;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --cream:#0f1713; --paper:#182420; --ink:#eef5f0; --muted:#9db3a8; --line:#2a3d34; --green-soft:#1d332a; --red-bg:#3a2320; }
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Plus Jakarta Sans",system-ui,sans-serif;background:var(--cream);color:var(--ink);padding-bottom:calc(var(--nav-h) + 130px)}
+button,[role="button"],select,input,textarea{min-height:36px;font-family:inherit}
+button{cursor:pointer;border:none;background:none;color:inherit}
+.wrap{max-width:560px;margin:0 auto;padding:0 14px}
+/* Header */
+header{background:var(--green);color:#fff;position:sticky;top:0;z-index:40}
+.hbar{max-width:560px;margin:0 auto;display:flex;align-items:center;gap:10px;padding:12px 14px}
+.logo{width:44px;height:44px;border-radius:12px;background:#071f17;border:1px solid rgba(255,255,255,.25);display:grid;place-items:center;font-weight:800;font-size:22px;color:var(--gold)}
+.brand{font-size:24px;font-weight:800;letter-spacing:-.5px}
+.badge{background:var(--gold);color:#231a05;font-size:11px;font-weight:800;padding:3px 8px;border-radius:6px;vertical-align:middle}
+.acct-pill{margin-left:auto;display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.1);border:1px solid rgba(233,196,106,.55);color:#fff;border-radius:12px;padding:8px 10px;font-weight:700;font-size:13px;max-width:170px}
+.icon-btn{width:40px;height:40px;border-radius:50%;border:1px solid rgba(255,255,255,.35);display:grid;place-items:center;font-size:17px;color:#fff;flex:none}
+/* Cards & sections */
+.card{background:var(--paper);border:1px solid var(--line);border-radius:20px;padding:16px;box-shadow:var(--card-shadow);margin-top:14px}
+h2.sec{font-size:19px;margin:20px 2px 0;font-weight:800}
+.muted{color:var(--muted);font-size:13px}
+.row{display:flex;align-items:center;gap:10px}
+.grow{flex:1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:12px;padding:10px 16px;font-weight:800;font-size:14px}
+.btn-green{background:var(--green);color:#fff}
+.btn-gold{background:var(--gold);color:#231a05}
+.btn-ghost{border:1.5px solid var(--green);color:var(--green)}
+.btn-danger{background:var(--red-bg);color:var(--red)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+input[type=text],input[type=tel],input[type=number],textarea,select{width:100%;border:1.5px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--paper);color:var(--ink);font-size:14px}
+label.fl{display:block;font-size:12px;font-weight:700;color:var(--muted);margin:12px 0 5px}
+.view{display:none}.view.active{display:block}
+.chip{border:1.5px solid var(--line);background:var(--paper);border-radius:999px;padding:7px 14px;font-weight:700;font-size:13px;min-height:36px}
+.chip.on{background:var(--green);color:#fff;border-color:var(--green)}
+/* Cart */
+.deliver{display:flex;gap:12px;align-items:flex-start}
+.pin{color:var(--green);font-size:22px}
+.stepper{display:flex;align-items:center;border-radius:12px;overflow:hidden;background:linear-gradient(90deg,var(--green2),var(--rust));color:#fff;font-weight:800;min-width:104px}
+.stepper button{color:#fff;font-size:18px;width:36px;height:40px}
+.stepper .q{flex:1;text-align:center}
+.add-btn{border:1.5px solid var(--green);color:var(--green);font-weight:800;border-radius:12px;padding:8px 22px;background:var(--paper);box-shadow:0 3px 8px rgba(11,61,46,.15)}
+.veg{width:16px;height:16px;border:1.5px solid #1a7a37;border-radius:4px;display:inline-grid;place-items:center;flex:none}
+.veg::after{content:"";width:7px;height:7px;border-radius:50%;background:#1a7a37}
+.dash{border:none;border-top:1.5px dashed var(--line);margin:12px 0}
+.switch{position:relative;width:56px;height:36px;flex:none;border-radius:999px;background:#cfd8d2;transition:.2s;padding:0}
+.switch::after{content:"";position:absolute;width:28px;height:28px;border-radius:50%;background:#fff;top:4px;left:4px;transition:.2s;box-shadow:0 1px 4px rgba(0,0,0,.25)}
+.switch[aria-checked="true"]{background:var(--green2)}
+.switch[aria-checked="true"]::after{left:24px}
+.bill-row{display:flex;justify-content:space-between;font-size:14px;padding:5px 0}
+.bill-row.total{font-size:17px;font-weight:800;border-top:1.5px dashed var(--line);margin-top:8px;padding-top:12px}
+.free{color:#1a7a37;font-weight:700}
+.neg{color:#1a7a37;font-weight:700}
+.alert{background:var(--red-bg);border:1.5px solid var(--red);color:var(--red);border-radius:14px;padding:12px 14px;font-weight:700;font-size:13.5px;margin-top:14px}
+.okbox{background:var(--green-soft);border:1.5px solid var(--green2);border-radius:14px;padding:12px 14px;font-size:13.5px;margin-top:14px}
+/* Pay bar */
+.paybar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--nav-h) + 10px);width:min(532px,calc(100% - 20px));background:var(--green);color:#fff;border-radius:18px;padding:12px 14px;display:none;align-items:center;gap:12px;z-index:35;box-shadow:0 10px 30px rgba(0,0,0,.3)}
+.paybar.show{display:flex}
+.paybar .lbl{font-size:11px;letter-spacing:1.2px;opacity:.75;font-weight:700}
+.paybar .amt{font-size:22px;font-weight:800}
+.paynow{background:var(--blue);color:#fff;font-weight:800;font-size:16px;border-radius:14px;padding:14px 22px;margin-left:auto}
+.paynow:disabled{background:#5b6d66}
+/* Bottom nav */
+nav{position:fixed;bottom:0;left:0;right:0;background:var(--green);z-index:40;padding-bottom:env(safe-area-inset-bottom)}
+.nav-in{max-width:560px;margin:0 auto;display:grid;grid-template-columns:repeat(6,1fr)}
+.nav-in button{color:#b9cdc2;font-size:11px;font-weight:700;padding:9px 2px 10px;display:flex;flex-direction:column;align-items:center;gap:3px;min-height:56px}
+.nav-in button .ic{font-size:21px;line-height:1}
+.nav-in button.on{color:var(--gold)}
+/* Restaurant / menu */
+.rest-img{width:58px;height:58px;border-radius:14px;flex:none;display:grid;place-items:center;font-size:28px;color:#fff}
+.tag{font-size:11px;font-weight:800;background:var(--green-soft);color:var(--green2);padding:3px 8px;border-radius:6px}
+.acct-card{display:flex;gap:12px;align-items:flex-start}
+.avatar{width:44px;height:44px;border-radius:50%;background:var(--green);color:#fff;display:grid;place-items:center;font-weight:800;flex:none}
+.mini{font-size:12px;font-weight:700;padding:7px 10px;border-radius:9px;min-height:36px}
+/* Sheet */
+.sheet-bg{position:fixed;inset:0;background:rgba(5,15,10,.55);z-index:60;display:none}
+.sheet-bg.open{display:block}
+.sheet{position:fixed;left:50%;transform:translateX(-50%);bottom:0;width:min(560px,100%);background:var(--paper);border-radius:22px 22px 0 0;z-index:61;padding:20px 18px calc(20px + env(safe-area-inset-bottom));display:none;max-height:88vh;overflow:auto}
+.sheet.open{display:block}
+.toast{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:var(--green);color:#fff;font-weight:700;font-size:13.5px;padding:11px 18px;border-radius:12px;z-index:80;display:none;box-shadow:0 8px 24px rgba(0,0,0,.3);max-width:92vw;text-align:center}
+.mapbox{height:150px;border-radius:14px;background:repeating-linear-gradient(0deg,#e8efdf 0 24px,#dfe8d2 24px 25px),repeating-linear-gradient(90deg,transparent 0 24px,rgba(0,0,0,.04) 24px 25px);background-color:#e8efdf;position:relative;display:grid;place-items:center;font-size:34px}
+.kbd{font-family:ui-monospace,monospace;background:var(--green-soft);padding:2px 7px;border-radius:6px;font-size:12.5px}
+ol.steps{padding-left:20px;font-size:14px;line-height:1.65}
+</style>
+</head>
+<body>
+<header>
+  <div class="hbar">
+    <div class="logo">T</div>
+    <div class="brand">Toing <span class="badge">MINI</span></div>
+    <button class="acct-pill" id="acctPill" onclick="go('accounts')">👤 <span id="acctPillTxt">+91 934159…</span> ▾</button>
+    <button class="icon-btn" onclick="toast('Sab kuch up to date hai ✓')" aria-label="Refresh">↻</button>
+    <button class="icon-btn" onclick="toast('Theme aapke phone ki setting se chalta hai')" aria-label="Theme">☾</button>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- ============ ACCOUNTS ============ -->
+<section class="view" id="v-accounts">
+  <h2 class="sec">Saved Accounts</h2>
+  <p class="muted">Ek account select karke order karein. JSON wahi format jo Toing bot deta hai.</p>
+  <div id="acctList"></div>
+
+  <div class="card">
+    <b style="font-size:16px">➕ Account add karein — Number + OTP</b>
+    <label class="fl">Mobile number</label>
+    <div class="row"><input type="tel" id="otpMobile" placeholder="10-digit number" maxlength="10" inputmode="numeric"><button class="btn btn-green" onclick="sendOtp()">OTP bhejein</button></div>
+    <div id="otpBox" style="display:none">
+      <label class="fl">OTP (demo screen — bot flow me asli OTP Telegram/SMS se aata hai)</label>
+      <div class="row"><input type="number" id="otpVal" placeholder="4-digit OTP"><button class="btn btn-gold" onclick="verifyOtp()">Verify &amp; Login</button></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <b style="font-size:16px">📥 Session JSON se login</b>
+    <label class="fl">Login JSON paste karein (field order: mobile, name, token, sid, tid, deviceId, customerId)</label>
+    <textarea id="jsonIn" rows="4" placeholder='{"mobile":"...","name":"...","token":"...","sid":"...","tid":"...","deviceId":"...","customerId":"..."}'></textarea>
+    <div class="row" style="margin-top:10px"><button class="btn btn-green grow" onclick="loginJson()">JSON se Login</button></div>
+    <p class="muted" id="jsonMsg"></p>
+  </div>
+</section>
+
+<!-- ============ ADDRESS ============ -->
+<section class="view" id="v-address">
+  <h2 class="sec">Delivery Address</h2>
+  <p class="muted">Cart ke restaurant ki city se matching address hi checkout allow karega.</p>
+  <div id="addrList"></div>
+
+  <div class="card">
+    <b style="font-size:16px">📍 Map pe pin karke add karein</b>
+    <div class="mapbox" style="margin-top:12px">📍</div>
+    <label class="fl">Label</label>
+    <select id="adLabel"><option>Home</option><option>Work</option><option>Other</option></select>
+    <label class="fl">Poora address</label>
+    <input type="text" id="adText" placeholder="House no, street, area">
+    <label class="fl">City</label>
+    <select id="adCity"><option>Hyderabad</option><option>Kolkata</option><option>Delhi</option><option>Bengaluru</option><option>Mumbai</option></select>
+    <div class="row" style="margin-top:14px"><button class="btn btn-green grow" onclick="addAddress()">Address save karein</button></div>
+  </div>
+
+  <div class="card">
+    <b style="font-size:16px">🔗 Swiggy link se import</b>
+    <label class="fl">Address share link paste karein</label>
+    <div class="row"><input type="text" id="impLink" placeholder="https://www.swiggy.com/…"><button class="btn btn-ghost" onclick="importAddr()">Import</button></div>
+    <p class="muted">Link se city aur area auto-detect hota hai.</p>
+  </div>
+</section>
+
+<!-- ============ SEARCH ============ -->
+<section class="view active" id="v-search">
+  <div class="card" style="margin-top:14px">
+    <div class="row">🔎 <input type="text" id="q" placeholder="Restaurant ya dish search karein…" oninput="renderSearch()" style="border:none;font-size:15px;padding:4px"></div>
+  </div>
+  <div class="row" style="margin-top:14px;flex-wrap:wrap" id="catChips"></div>
+  <div id="restList"></div>
+</section>
+
+<!-- ============ CART ============ -->
+<section class="view" id="v-cart">
+  <div class="card deliver" style="margin-top:14px;cursor:pointer" onclick="go('address')">
+    <div class="pin">📍</div>
+    <div class="grow"><b id="delTitle">Delivering to Home</b><div class="muted" id="delAddr">—</div></div>
+    <div style="font-size:20px;color:var(--muted)">›</div>
+  </div>
+
+  <h2 class="sec">Your Order <span class="muted" style="float:right;font-size:13px" id="cartMeta"></span></h2>
+  <div id="cartBox"></div>
+
+  <div class="card row">
+    <div style="width:52px;height:52px;border-radius:14px;background:var(--green);display:grid;place-items:center;font-size:26px;flex:none">🕵️</div>
+    <div class="grow"><b>Incognito mode</b><div class="muted" id="incogTxt">Off — order history me dikhega</div></div>
+    <button class="switch" id="incog" role="switch" aria-checked="false" aria-label="Incognito mode" onclick="toggleIncog()"></button>
+  </div>
+
+  <div id="areaAlert"></div>
+  <div id="couponBox"></div>
+  <div id="billBox"></div>
+</section>
+
+<!-- ============ ORDERS ============ -->
+<section class="view" id="v-orders">
+  <h2 class="sec">My Orders</h2>
+  <div id="orderList"></div>
+</section>
+
+<!-- ============ TOOLS ============ -->
+<section class="view" id="v-tools">
+  <h2 class="sec">Tools</h2>
+  <div class="card row">
+    <div style="font-size:30px">💸</div>
+    <div class="grow"><b>Refer Cash — ₹50</b><div class="muted">₹100+ ke cart pe auto-apply hota hai. Balance: <b style="color:var(--ink)">₹50</b></div></div>
+    <span class="tag">ACTIVE</span>
+  </div>
+  <div class="card">
+    <b>🎟️ Coupons</b>
+    <div class="row" style="margin-top:10px"><span class="kbd">BHIMNEW</span><span class="muted grow">₹99+ cart pe ₹49.99 off (UPI payment)</span><button class="mini btn-ghost" onclick="applyCoupon('BHIMNEW');go('cart')">Apply</button></div>
+    <div class="row" style="margin-top:8px"><span class="kbd">TOING50</span><span class="muted grow">₹149+ cart pe 50% off, max ₹80</span><button class="mini btn-ghost" onclick="applyCoupon('TOING50');go('cart')">Apply</button></div>
+  </div>
+  <div class="card">
+    <b>🤖 Mini App ko apne Telegram Bot me attach karein</b>
+    <ol class="steps">
+      <li>Telegram me <b>@BotFather</b> kholein → <span class="kbd">/mybots</span> → apna bot (jaise <b>@TOINGMTNBOT</b>) select karein</li>
+      <li><b>Bot Settings → Menu Button → Edit menu button URL</b></li>
+      <li>Is mini app ka link wahan paste karke save karein</li>
+      <li>Bot chat me neeche Menu button aayega — wahi se ye mini app seedha khulega</li>
+    </ol>
+    <p class="muted">Bot ke andar khulne par account Telegram user se auto-link ho jata hai.</p>
+  </div>
+  <div class="card">
+    <b>⚙️ Data</b>
+    <div class="row" style="margin-top:12px;flex-wrap:wrap">
+      <button class="btn btn-ghost" onclick="exportAccounts()">⬇ Accounts Export (JSON)</button>
+      <button class="btn btn-danger" onclick="clearCart()">🗑 Cart Clear</button>
+    </div>
+  </div>
+</section>
+</div>
+
+<!-- Pay bar -->
+<div class="paybar" id="paybar">
+  <div><div class="lbl">PAY USING UPI</div><div class="amt" id="payAmt">₹0</div></div>
+  <button class="paynow" id="payBtn" onclick="openPay()">Pay Now →</button>
+</div>
+
+<!-- Bottom nav -->
+<nav><div class="nav-in">
+  <button data-t="accounts" onclick="go('accounts')"><span class="ic">👤</span>Accounts</button>
+  <button data-t="address" onclick="go('address')"><span class="ic">📍</span>Address</button>
+  <button data-t="search" onclick="go('search')" class="on"><span class="ic">🔍</span>Search</button>
+  <button data-t="cart" onclick="go('cart')"><span class="ic">🛒</span>Cart <span id="cartCount"></span></button>
+  <button data-t="orders" onclick="go('orders')"><span class="ic">🕘</span>Orders</button>
+  <button data-t="tools" onclick="go('tools')"><span class="ic">⚡</span>Tools</button>
+</div></nav>
+
+<!-- Pay sheet -->
+<div class="sheet-bg" id="sheetBg" onclick="closePay()"></div>
+<div class="sheet" id="paySheet">
+  <b style="font-size:18px">Payment — UPI</b>
+  <p class="muted">Checkout isi browser/WebView ke andar hoga — pehle Swiggy isi browser me load hokar apna WAF check pura karega, phir aapke asli session se cart/checkout call hoga. Sirf Swiggy ka returned official UPI QR hi dikhega.</p>
+  <div id="paySummary"></div>
+  <div id="payStatus"></div>
+  <div id="qrBox"></div>
+  <label class="fl">Payment method</label>
+  <div class="row" style="flex-wrap:wrap">
+    <button class="chip on" id="pmUpi" onclick="setPm('UPI')">💳 UPI / QR</button>
+    <button class="chip" id="pmCod" onclick="setPm('COD')">💵 Cash on Delivery</button>
+  </div>
+  <div class="row" style="margin-top:16px">
+    <button class="btn btn-ghost" onclick="closePay()">Cancel</button>
+    <button class="btn btn-green grow" id="confirmBtn" onclick="confirmOrder()">Confirm Order</button>
+  </div>
+  <p class="muted" style="margin-top:10px">Agar Swiggy checkout block karta hai (WAF 202) to ek retry ke baad block saaf dikhaya jayega — koi nakli QR ya fake success kabhi nahi banega, aur paisa nahi katega.</p>
+</div>
+<div id="wafFrameBox" style="position:absolute;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none" aria-hidden="true"></div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------- Data ---------- */
+var RESTAURANTS=[
+ {id:'r1',name:'City Pearl Restaurant',area:'Santoshnagar & Saidabad',city:'Hyderabad',time:'15–20 mins',rating:'4.3',color:'#8a5a2b',emoji:'🍛',items:[
+   {id:'i1',name:'Coffe',desc:'1 Coffee',price:40,veg:true},
+   {id:'i2',name:'Pawna chai',desc:'Special kadak chai',price:32,veg:true},
+   {id:'i3',name:'Chicken Biryani',desc:'Hyderabadi dum biryani, raita ke saath',price:199,veg:false},
+   {id:'i4',name:'Masala Dosa',desc:'Crispy dosa, sambar + chutney',price:89,veg:true}]},
+ {id:'r2',name:"Domino's Pizza",area:'Park Street',city:'Kolkata',time:'25–30 mins',rating:'4.1',color:'#0b5fa5',emoji:'🍕',items:[
+   {id:'i5',name:'Margherita Pizza',desc:'Classic cheese, medium',price:249,veg:true},
+   {id:'i6',name:'Garlic Breadsticks',desc:'Buttery garlic bread',price:119,veg:true}]},
+ {id:'r3',name:'Biryani Blues',area:'Hitech City',city:'Hyderabad',time:'30–35 mins',rating:'4.4',color:'#7a2e6d',emoji:'🍗',items:[
+   {id:'i7',name:'Mutton Biryani',desc:'Seeraga samba rice',price:329,veg:false},
+   {id:'i8',name:'Paneer Tikka',desc:'Smoky starter',price:179,veg:true}]}
+];
+var CATS=['All','Biryani','Pizza','Chai & Coffee','South Indian'];
+var state={
+ tab:'search', cat:'All',
+ account:'a1',
+ accounts:[
+   {id:'a1',mobile:'934159XXXX',name:'Huang',customerId:'CUST-88412',used:false,active:true},
+   {id:'a2',mobile:'981204XXXX',name:'Guest User',customerId:'CUST-51190',used:true,active:false}
+ ],
+ addresses:[
+   {id:'ad1',label:'Home',text:'18, Hyderabad, Edi Bazar West, Edi Bazaar',city:'Hyderabad',sel:true},
+   {id:'ad2',label:'Work',text:'Park Street, Kolkata',city:'Kolkata',sel:false}
+ ],
+ cart:{r1:{i1:2,i2:1}}, /* default cart = screenshot wala */
+ coupon:'BHIMNEW', referBalance:50, pm:'UPI',
+ orders:[{id:'ORD-7291',rest:'City Pearl Restaurant',items:'Chicken Biryani ×1',total:212,status:'Delivered',when:'Kal, 8:42 PM',hidden:false}]
+};
+try{ if(window.Telegram&&Telegram.WebApp){Telegram.WebApp.ready();Telegram.WebApp.expand();} }catch(e){}
+
+/* ---------- Helpers ---------- */
+function $(id){return document.getElementById(id)}
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+function money(n){return '₹'+(Math.round(n*100)/100).toLocaleString('en-IN')}
+function toast(m){var t=$('toast');t.textContent=m;t.style.display='block';setTimeout(function(){t.style.display='none'},2600)}
+function go(tab){state.tab=tab;document.querySelectorAll('.view').forEach(function(v){v.classList.remove('active')});$('v-'+tab).classList.add('active');document.querySelectorAll('.nav-in button').forEach(function(b){b.classList.toggle('on',b.dataset.t===tab)});renderAll();window.scrollTo(0,0)}
+function selAddr(){return state.addresses.find(function(a){return a.sel})||state.addresses[0]}
+function cartRestId(){var k=Object.keys(state.cart).filter(function(r){return Object.keys(state.cart[r]).length});return k[0]||null}
+function cartCount(){var n=0;for(var r in state.cart)for(var i in state.cart[r])n+=state.cart[r][i];return n}
+function findItem(rid,iid){var R=RESTAURANTS.find(function(x){return x.id===rid});return R?R.items.find(function(x){return x.id===iid}):null}
+function findRest(rid){return RESTAURANTS.find(function(x){return x.id===rid})}
+
+/* ---------- Bill logic (proper discount logic) ---------- */
+function bill(){
+ var total=0;for(var r in state.cart)for(var i in state.cart[r]){var it=findItem(r,i);if(it)total+=it.price*state.cart[r][i]}
+ var couponOff=0,couponMsg='';
+ if(state.coupon==='BHIMNEW'){ if(total>=99){couponOff=49.99}else{couponMsg='BHIMNEW ke liye ₹'+(99-total)+' aur add karein (min ₹99)'} }
+ if(state.coupon==='TOING50'){ if(total>=149){couponOff=Math.min(80,total*0.5)}else{couponMsg='TOING50 ke liye ₹'+(149-total)+' aur add karein (min ₹149)'} }
+ var referOff=(total>=100&&state.referBalance>0)?Math.min(50,state.referBalance):0;
+ var referMsg=(total>0&&total<100)?'Refer Cash ₹50 sirf ₹100+ cart pe lagta hai':'';
+ var delivery=(total===0||total>=99)?0:30;
+ var toPay=Math.max(0,total-couponOff-referOff+delivery);
+ return {total:total,couponOff:couponOff,couponMsg:couponMsg,referOff:referOff,referMsg:referMsg,delivery:delivery,toPay:Math.round(toPay*100)/100};
+}
+function areaMismatch(){
+ var rid=cartRestId();if(!rid)return false;var R=findRest(rid),A=selAddr();if(!R||!A)return false;return R.city!==A.city;
+}
+
+/* ---------- Render: Accounts ---------- */
+function renderAccounts(){
+ $('acctList').innerHTML=state.accounts.map(function(a){
+  return '<div class="card acct-card"><div class="avatar">'+esc(a.name.charAt(0))+'</div><div class="grow"><b>+91 '+esc(a.mobile)+'</b> '+(a.active?'<span class="tag">ACTIVE</span>':'')+(a.used?'<span class="tag" style="background:var(--red-bg);color:var(--red)">USED</span>':'')+'<div class="muted">'+esc(a.name)+' • Customer ID: '+esc(a.customerId)+'</div><div class="row" style="margin-top:8px;flex-wrap:wrap">'
+  +'<button class="mini btn-green" onclick="setActive(\''+a.id+'\')">Use karein</button>'
+  +'<button class="mini btn-ghost" onclick="markUsed(\''+a.id+'\')">Mark Used</button>'
+  +'<button class="mini btn-ghost" onclick="exportOne(\''+a.id+'\')">Export</button>'
+  +'<button class="mini btn-danger" onclick="delAcct(\''+a.id+'\')">Delete</button></div></div></div>'}).join('');
+ var act=state.accounts.find(function(a){return a.active});if(act)$('acctPillTxt').textContent='+91 '+act.mobile.slice(0,6)+'…';
+}
+function setActive(id){state.accounts.forEach(function(a){a.active=a.id===id});renderAccounts();toast('Account switch ho gaya ✓')}
+function markUsed(id){var a=state.accounts.find(function(x){return x.id===id});a.used=!a.used;renderAccounts()}
+function delAcct(id){state.accounts=state.accounts.filter(function(x){return x.id!==id});renderAccounts();toast('Account delete ho gaya')}
+function exportOne(id){var a=state.accounts.find(function(x){return x.id===id});download('toing-account-'+a.mobile+'.json',JSON.stringify({mobile:a.mobile,name:a.name,customerId:a.customerId},null,2));toast('JSON export ho gaya ⬇')}
+function exportAccounts(){download('toing-accounts.json',JSON.stringify(state.accounts,null,2));toast('Saare accounts export ho gaye ⬇')}
+function download(name,text){var b=new Blob([text],{type:'application/json'});var u=URL.createObjectURL(b);var l=document.createElement('a');l.href=u;l.download=name;l.click();URL.revokeObjectURL(u)}
+function sendOtp(){var m=$('otpMobile').value.trim();if(!/^\d{10}$/.test(m)){toast('Sahi 10-digit number daalein');return}$('otpBox').style.display='block';toast('OTP bhej diya gaya +91 '+m+' pe')}
+function verifyOtp(){var m=$('otpMobile').value.trim(),o=$('otpVal').value.trim();if(o.length<4){toast('4-digit OTP daalein');return}addAccount(m);$('otpBox').style.display='none';toast('Login ho gaya ✓ Account save ho gaya')}
+function addAccount(mobile,name,session){var id='a'+Date.now();state.accounts.forEach(function(a){a.active=false});var a={id:id,mobile:mobile.slice(0,6)+'XXXX',name:name||'User',customerId:(session&&session.customerId)?String(session.customerId):'CUST-'+Math.floor(10000+Math.random()*89999),used:false,active:true};if(session){a.token=String(session.token||'');a.sid=String(session.sid||'');a.tid=String(session.tid||'');a.deviceId=String(session.deviceId||'')}state.accounts.push(a);renderAccounts()}
+function activeAccount(){return state.accounts.find(function(a){return a.active})||state.accounts[0]}
+function loginJson(){
+ var raw=$('jsonIn').value.trim(),msg=$('jsonMsg');
+ try{var j=JSON.parse(raw);var need=['mobile','name','token','sid','tid','deviceId','customerId'];var miss=need.filter(function(k){return !(k in j)||j[k]===undefined||j[k]===''});
+  if(miss.length){msg.style.color='var(--red)';msg.textContent='❌ Nakli / incomplete JSON reject — missing fields: '+miss.join(', ');return}
+  if(String(j.customerId)==='0'){msg.style.color='var(--red)';msg.textContent='❌ Ye sirf registration session hai (customerId "0") — bot se doosra OTP verify karke full login JSON lein.';return}
+  addAccount(String(j.mobile),String(j.name),j);msg.style.color='#1a7a37';msg.textContent='✅ Asli format ka JSON accept ho gaya — account save ho gaya.';toast('JSON login successful ✓');
+ }catch(e){msg.style.color='var(--red)';msg.textContent='❌ Invalid JSON hai — bot wala pura login JSON paste karein.'}
+}
+
+/* ---------- Render: Address ---------- */
+function renderAddresses(){
+ $('addrList').innerHTML=state.addresses.map(function(a){
+  return '<div class="card row"><div class="pin">📍</div><div class="grow"><b>'+esc(a.label)+'</b> '+(a.sel?'<span class="tag">SELECTED</span>':'')+'<div class="muted">'+esc(a.text)+', '+esc(a.city)+'</div></div>'
+  +(a.sel?'':'<button class="mini btn-green" onclick="selAddress(\''+a.id+'\')">Select</button>')
+  +'<button class="mini btn-danger" onclick="delAddr(\''+a.id+'\')">✕</button></div>'}).join('');
+ var A=selAddr();if(A){$('delTitle').textContent='Delivering to '+A.label;$('delAddr').textContent=A.text+', '+A.city}
+}
+function selAddress(id){state.addresses.forEach(function(a){a.sel=a.id===id});renderAll();toast('Delivery address updated ✓')}
+function delAddr(id){state.addresses=state.addresses.filter(function(x){return x.id!==id});if(state.addresses.length&&!selAddr().sel)state.addresses[0].sel=true;renderAll()}
+function addAddress(){var t=$('adText').value.trim();if(!t){toast('Poora address likhein');return}state.addresses.forEach(function(a){a.sel=false});state.addresses.push({id:'ad'+Date.now(),label:$('adLabel').value,text:t,city:$('adCity').value,sel:true});$('adText').value='';renderAll();toast('Address save ho gaya ✓')}
+function importAddr(){var l=$('impLink').value.trim();if(!l){toast('Pehle Swiggy link paste karein');return}var city=/kolkata/i.test(l)?'Kolkata':/delhi/i.test(l)?'Delhi':'Hyderabad';state.addresses.forEach(function(a){a.sel=false});state.addresses.push({id:'ad'+Date.now(),label:'Home',text:'Imported address ('+city+')',city:city,sel:true});renderAll();toast('Link se address import ho gaya — '+city+' ✓')}
+
+/* ---------- Render: Search ---------- */
+function renderSearch(){
+ $('catChips').innerHTML=CATS.map(function(c){return '<button class="chip'+(state.cat===c?' on':'')+'" onclick="setCat(\''+c+'\')">'+c+'</button>'}).join('');
+ var q=($('q').value||'').toLowerCase();
+ $('restList').innerHTML=RESTAURANTS.map(function(R){
+  var items=R.items.filter(function(it){
+    var okQ=!q||it.name.toLowerCase().includes(q)||R.name.toLowerCase().includes(q);
+    var okC=state.cat==='All'||it.name.toLowerCase().includes(state.cat.toLowerCase().split(' ')[0])||(state.cat==='Chai & Coffee'&&(it.name.toLowerCase().includes('chai')||it.name.toLowerCase().includes('coffe')));
+    return okQ&&okC});
+  if(!items.length)return '';
+  return '<div class="card"><div class="row"><div class="rest-img" style="background:'+R.color+'">'+R.emoji+'</div><div class="grow"><b style="font-size:16px">'+R.name+'</b><div class="muted">'+R.area+', '+R.city+' • '+R.time+'</div></div><span class="tag">★ '+R.rating+'</span></div>'
+   +items.map(function(it){var qty=(state.cart[R.id]||{})[it.id]||0;
+     return '<hr class="dash"><div class="row"><span class="veg"></span><div class="grow"><b>'+it.name+'</b><div class="muted">'+it.desc+'</div><b>'+money(it.price)+'</b></div>'
+     +(qty===0?'<button class="add-btn" onclick="chg(\''+R.id+'\',\''+it.id+'\',1)">ADD</button>':stepper(R.id,it.id,qty))
+     +'</div>'}).join('')+'</div>'}).join('')||'<div class="card muted">Kuch nahi mila — doosra search try karein.</div>';
+}
+function setCat(c){state.cat=c;renderSearch()}
+function stepper(rid,iid,q){return '<div class="stepper"><button onclick="chg(\''+rid+'\',\''+iid+'\',-1)">'+(q===1?'🗑':'−')+'</button><span class="q">'+q+'</span><button onclick="chg(\''+rid+'\',\''+iid+'\',1)">+</button></div>'}
+function chg(rid,iid,d){if(!state.cart[rid])state.cart[rid]={};var cur=state.cart[rid][iid]||0;var ridNow=cartRestId();if(ridNow&&ridNow!==rid&&d>0&&cur===0){if(!confirmSwitch(rid))return;state.cart={};state.cart[rid]={}}
+ var n=cur+d;if(n<=0)delete state.cart[rid][iid];else state.cart[rid][iid]=n;renderAll()}
+function confirmSwitch(rid){toast('Cart clear karke '+findRest(rid).name+' se order shuru kiya');return true}
+function clearCart(){state.cart={};renderAll();toast('Cart clear ho gaya')}
+
+/* ---------- Render: Cart ---------- */
+function renderCart(){
+ var rid=cartRestId(),n=cartCount(),b=bill();
+ $('cartMeta').textContent=n?n+' items • '+money(b.total):'';
+ $('cartCount').textContent=n?'('+n+')':'';
+ if(!rid){$('cartBox').innerHTML='<div class="card muted">Cart khaali hai — Search tab se kuch tasty add karein 🍽️</div>';}
+ else{var R=findRest(rid);
+  $('cartBox').innerHTML='<div class="card"><div class="row"><div class="rest-img" style="background:'+R.color+'">'+R.emoji+'</div><div class="grow"><b style="font-size:16px">'+R.name+'</b><div class="muted">'+R.area+' • '+R.time+'</div></div><button class="btn-danger mini" onclick="clearCart()">🗑</button></div>'
+  +Object.keys(state.cart[rid]).map(function(iid){var it=findItem(rid,iid),q=state.cart[rid][iid];
+    return '<hr class="dash"><div class="row"><span class="veg"></span><div class="grow"><b>'+it.name+'</b><div class="muted">'+it.desc+'</div></div>'+stepper(rid,iid,q)+'<b style="min-width:52px;text-align:right">'+money(it.price*q)+'</b></div>'}).join('')
+  +'<hr class="dash"><button style="color:var(--green);font-weight:800;font-size:15px" onclick="go(\'search\')">＋ Add more items</button></div>';
+ }
+ var mism=areaMismatch();
+ $('areaAlert').innerHTML=mism?'<div class="alert">⚠️ This location is outside the outlet\'s delivery area — cart wala restaurant <b>'+findRest(rid).city+'</b> ka hai, selected address <b>'+selAddr().city+'</b> ka hai. Wahi city ka address select karein ya cart clear karke paas ke restaurant se order karein.</div>':'';
+ /* Coupon */
+ if(n===0){$('couponBox').innerHTML='';}
+ else if(state.coupon){$('couponBox').innerHTML='<div class="okbox row"><span style="font-size:22px">🥂</span><div class="grow"><b>Coupon \''+state.coupon+'\' applied</b><div style="color:#1a7a37;font-weight:700">'+(b.couponOff?money(b.couponOff)+' off':b.couponMsg)+'</div></div><button style="font-weight:800;color:var(--green)" onclick="removeCoupon()">Change</button></div>';}
+ else{$('couponBox').innerHTML='<div class="card row"><span style="font-size:22px">🎟️</span><input type="text" id="cpnIn" placeholder="Coupon code — BHIMNEW try karein" class="grow" style="border:none"><button class="btn btn-ghost" onclick="applyCoupon(document.getElementById(\'cpnIn\').value)">Apply</button></div>';}
+ /* Bill */
+ if(n===0||mism){$('billBox').innerHTML='';}
+ else{$('billBox').innerHTML='<div class="card"><b style="font-size:16px">Bill Details</b>'
+  +'<div class="bill-row" style="margin-top:8px"><span>Item Total</span><span>'+money(b.total)+'</span></div>'
+  +(b.couponOff?'<div class="bill-row"><span>Coupon ('+state.coupon+')</span><span class="neg">− '+money(b.couponOff)+'</span></div>':'')
+  +(b.referOff?'<div class="bill-row"><span>Refer Cash</span><span class="neg">− '+money(b.referOff)+'</span></div>':'')
+  +(b.referMsg?'<div class="bill-row"><span class="muted">'+b.referMsg+'</span><span></span></div>':'')
+  +'<div class="bill-row"><span>Delivery Fee</span><span>'+(b.delivery===0?'<span class="free">FREE</span> <s class="muted">₹30</s>':money(b.delivery))+'</span></div>'
+  +'<div class="bill-row"><span>Taxes &amp; GST</span><span class="muted">Included</span></div>'
+  +'<div class="bill-row total"><span>To Pay</span><span>'+money(b.toPay)+'</span></div></div>';
+ }
+ /* Pay bar */
+ var show=(state.tab==='cart'&&n>0);
+ $('paybar').classList.toggle('show',show);
+ $('payAmt').textContent=money(b.toPay);
+ $('payBtn').disabled=mism;
+ $('payBtn').textContent=mism?'Not Deliverable':'Pay Now →';
+}
+function applyCoupon(c){c=(c||'').trim().toUpperCase();if(c!=='BHIMNEW'&&c!=='TOING50'){toast('Ye coupon valid nahi hai');return}state.coupon=c;renderAll();toast('Coupon '+c+' apply ho gaya 🎟️')}
+function removeCoupon(){state.coupon=null;renderAll()}
+function toggleIncog(){var b=$('incog');var on=b.getAttribute('aria-checked')!=='true';b.setAttribute('aria-checked',on);$('incogTxt').textContent=on?'On — order history se hidden rahega':'Off — order history me dikhega'}
+function incogOn(){return $('incog').getAttribute('aria-checked')==='true'}
+
+/* ---------- Orders & Pay ---------- */
+function renderOrders(){
+ var list=state.orders.filter(function(o){return !o.hidden});
+ $('orderList').innerHTML=list.length?list.map(function(o){
+  return '<div class="card"><div class="row"><b class="grow">'+esc(o.rest)+'</b><span class="tag">'+esc(o.status)+'</span></div><div class="muted" style="margin-top:4px">'+esc(o.items)+' • '+money(o.total)+'</div><div class="muted">'+esc(o.id)+' • '+esc(o.when)+' • Payment: '+esc(o.pay)+'</div></div>'}).join(''):'<div class="card muted">Abhi koi order nahi hai.</div>';
+}
+function setPm(p){state.pm=p;$('pmUpi').classList.toggle('on',p==='UPI');$('pmCod').classList.toggle('on',p==='COD');$('confirmBtn').textContent=p==='COD'?'Place Order (COD)':'Confirm — UPI Payment ke liye'}
+function openPay(){var b=bill(),rid=cartRestId(),R=findRest(rid);
+ $('paySummary').innerHTML='<div class="bill-row"><span>'+R.name+'</span><span>'+cartCount()+' items</span></div><div class="bill-row"><span>Item Total</span><span>'+money(b.total)+'</span></div>'
+ +(b.couponOff?'<div class="bill-row"><span>Coupon off</span><span class="neg">− '+money(b.couponOff)+'</span></div>':'')
+ +(b.referOff?'<div class="bill-row"><span>Refer Cash</span><span class="neg">− '+money(b.referOff)+'</span></div>':'')
+ +'<div class="bill-row total"><span>Payable</span><span>'+money(b.toPay)+'</span></div>';
+ setPm(state.pm);$('payStatus').innerHTML='';$('qrBox').innerHTML='';var cb=$('confirmBtn');cb.disabled=false;$('sheetBg').classList.add('open');$('paySheet').classList.add('open')}
+function closePay(){$('sheetBg').classList.remove('open');$('paySheet').classList.remove('open')}
+function placeOrderRecord(status){
+ var b=bill(),rid=cartRestId(),R=findRest(rid);var incog=incogOn();
+ var itemsTxt=Object.keys(state.cart[rid]).map(function(iid){return findItem(rid,iid).name+' ×'+state.cart[rid][iid]}).join(', ');
+ state.orders.unshift({id:'ORD-'+Math.floor(1000+Math.random()*9000),rest:R.name,items:itemsTxt,total:b.toPay,status:status,when:'Abhi, just now',pay:state.pm,hidden:incog});
+ state.cart={};renderAll();
+}
+function confirmOrder(){
+ if(state.pm==='COD'){placeOrderRecord('Placed');closePay();go('orders');toast('Order place ho gaya ✓ COD pe dena hai');return}
+ runSwiggyCheckout();
+}
+/* ---- Real checkout inside THIS browser/WebView ----
+   1) swiggy.com isi browser me load hota hai taaki AWS WAF ka JS challenge yahin chale.
+   2) Phir cart/checkout call asli session (tid/sid/token) ke saath yahin se jata hai.
+   3) Sirf Swiggy ke response me aaya official UPI QR / UPI link hi render hota hai.
+   202 aaye to exactly ek retry; phir bhi block ho to block saaf dikhta hai — fake QR/success kabhi nahi. */
+function payStatus(html,cls){$('payStatus').innerHTML='<div class="'+(cls||'okbox')+'" style="margin-top:12px">'+html+'</div>'}
+function waitMs(ms){return new Promise(function(r){setTimeout(r,ms)})}
+function warmUpSwiggy(){
+ return new Promise(function(resolve){
+  var box=$('wafFrameBox');box.innerHTML='';
+  var f=document.createElement('iframe');f.src='https://www.swiggy.com/';f.title='Swiggy session warm-up';f.setAttribute('aria-hidden','true');
+  var done=false;function fin(){if(!done){done=true;resolve()}}
+  f.onload=function(){setTimeout(fin,1500)};box.appendChild(f);setTimeout(fin,4500);
+ });
+}
+function checkoutPayload(){
+ var rid=cartRestId(),A=selAddr(),b=bill(),items=[];
+ Object.keys(state.cart[rid]||{}).forEach(function(iid){var it=findItem(rid,iid);items.push({menu_item_id:iid,name:it.name,quantity:state.cart[rid][iid],price:it.price})});
+ return {restaurant_id:rid,items:items,address:{text:A.text,city:A.city,label:A.label},coupon:state.coupon||'',amount:b.toPay,payment_method:'UPI'};
+}
+function callCheckout(){
+ var a=activeAccount()||{};var h={'Content-Type':'application/json'};
+ if(a.tid)h['tid']=a.tid; if(a.sid)h['sid']=a.sid; if(a.token)h['Authorization']='Bearer '+a.token; if(a.deviceId)h['deviceId']=a.deviceId;
+ return fetch('https://www.swiggy.com/dapi/checkout',{method:'POST',credentials:'include',headers:h,body:JSON.stringify(checkoutPayload())});
+}
+function findPayData(o,depth){
+ if(!o||typeof o!=='object'||depth>6)return null;
+ var keys=Object.keys(o);
+ for(var i=0;i<keys.length;i++){var k=keys[i].toLowerCase(),v=o[keys[i]];
+  if(typeof v==='string'&&v){
+   if((k.indexOf('qr')>-1)&&(v.indexOf('data:image')===0||/^https:\/\//.test(v)))return {type:'qr',value:v};
+   if(v.indexOf('upi://pay')===0)return {type:'upi',value:v};
+   if(k.indexOf('payment')>-1&&/^https:\/\/.*swiggy/.test(v))return {type:'link',value:v};
+  }}
+ for(var j=0;j<keys.length;j++){var r=findPayData(o[keys[j]],depth+1);if(r)return r}
+ return null;
+}
+function showBlock(reason){
+ payStatus('⛔ <b>Swiggy ne checkout block kar diya</b> ('+esc(reason)+').<br>Ek retry ke baad bhi official UPI QR nahi mila, isliye payment aage nahi badhaya gaya. <b>Koi paisa nahi kata, koi order place nahi hua</b> — cart aapka safe hai. Thodi der baad ya doosre account/address se dobara try karein.','alert');
+ $('confirmBtn').disabled=false;$('confirmBtn').textContent='Dobara try karein';
+}
+async function runSwiggyCheckout(){
+ var btn=$('confirmBtn');btn.disabled=true;$('qrBox').innerHTML='';
+ try{
+  btn.textContent='Swiggy load ho raha hai…';
+  payStatus('⏳ <b>Step 1/3:</b> Swiggy isi browser me load ho raha hai taaki WAF challenge yahin pura ho…');
+  await warmUpSwiggy();
+  payStatus('⏳ <b>Step 2/3:</b> Aapke asli session se Swiggy cart/checkout call ho raha hai…');
+  btn.textContent='Checkout ho raha hai…';
+  var resp=null,threw=null;
+  try{resp=await callCheckout()}catch(e){threw=e}
+  if(resp&&resp.status===202){
+   payStatus('⚠️ <b>202 mila</b> — Swiggy WAF challenge abhi bhi active hai. Ek baar retry ho raha hai…');
+   await waitMs(2500);
+   try{resp=await callCheckout()}catch(e){threw=e}
+   if(resp&&resp.status===202){showBlock('WAF 202 — dusri baar bhi challenge clear nahi hua');return}
+  }
+  if(threw){showBlock('browser se Swiggy checkout tak request nahi pahunchi — session/CORS block');return}
+  if(!resp||!resp.ok){showBlock('Swiggy response '+(resp?resp.status:'empty'));return}
+  var data=null;try{data=await resp.json()}catch(e){}
+  var pay=findPayData(data,0);
+  if(!pay){showBlock('Swiggy response me official UPI QR nahi aaya');return}
+  /* Sirf Swiggy ka returned official QR/link render hoga */
+  var b=bill();
+  if(pay.type==='qr'){
+   $('qrBox').innerHTML='<div class="card" style="text-align:center"><b>Official Swiggy UPI QR — '+money(b.toPay)+'</b><br><img src="'+esc(pay.value)+'" alt="Swiggy ka official UPI QR" style="width:220px;height:220px;object-fit:contain;margin-top:10px"><div class="muted">Kisi bhi UPI app se scan karke isi amount ka payment karein.</div></div>';
+  }else if(pay.type==='upi'){
+   $('qrBox').innerHTML='<div class="card" style="text-align:center"><b>Swiggy UPI payment — '+money(b.toPay)+'</b><br><a class="btn btn-green" style="margin-top:10px" href="'+esc(pay.value)+'">UPI App se Pay karein</a><div class="muted" style="margin-top:8px;word-break:break-all">'+esc(pay.value)+'</div></div>';
+  }else{
+   $('qrBox').innerHTML='<div class="card" style="text-align:center"><b>Swiggy payment page — '+money(b.toPay)+'</b><br><a class="btn btn-green" style="margin-top:10px" href="'+esc(pay.value)+'" target="_blank" rel="noopener">Swiggy pe Payment karein</a></div>';
+  }
+  payStatus('✅ <b>Step 3/3:</b> Swiggy se official UPI payment aa gaya hai. Payment complete karte hi order confirm hoga — tab tak status <b>Payment Pending</b> rahega.');
+  placeOrderRecord('Payment Pending');btn.textContent='QR aa gaya ✓';toast('Official Swiggy QR aa gaya — payment complete karein');
+ }catch(e){showBlock('unexpected error')}
+}
+function renderAll(){renderAccounts();renderAddresses();renderSearch();renderCart();renderOrders()}
+renderAll();go('cart');
+</script>
+</body>
+</html>
