@@ -1,11 +1,17 @@
 """Shared helpers for the Toing Mini backend (Vercel Python serverless).
 
-Stdlib only — no third-party dependencies, so the Vercel deploy cannot fail
-on a missing wheel. Ported from the Telegram bot (~/workspace/toing_bot/toing_bot.py):
-same Toing app identity, same profile.swiggy.com auth endpoints, same login JSON
-shape, same bill/discount rules. NEVER use Toing app headers on Swiggy dapi/*
-endpoints (instant 403) — dapi calls always use browser headers.
-"""
+Stdlib + curl_cffi for browser impersonation (Chrome 124 TLS fingerprint,
+like the Telegram bot's curl_cffi ladder). curl_cffi is OPTIONAL: if it
+cannot be imported, every call falls back to stdlib urllib, so the backend
+never crashes on a missing wheel. Ported from the Telegram bot
+(~/workspace/toing_bot/toing_bot.py): same Toing app identity, same
+profile.swiggy.com auth endpoints, same login JSON shape, same bill/
+discount rules. NEVER use Toing app headers on Swiggy dapi/* endpoints
+(instant 403) — dapi calls always use browser headers.
+PROVEN 2026-11-26: curl_cffi impersonation does NOT clear the AWS WAF JS
+challenge on stateful endpoints (menu/pl, cart, checkout still return 202)
+— it only makes traffic look like a real browser. Menu/checkout still run
+in the phone's browser context; this change does not alter that."""
 import base64
 import json
 import os
@@ -63,6 +69,60 @@ def random_user_name():
 
 def new_device_id():
     return "".join(random.choices("0123456789abcdef", k=16))
+
+
+# ---------------------------------------------------------------- curl_cffi (browser impersonation)
+
+_CFFI_SESSION_CLS = None  # lazy: False when curl_cffi is unavailable
+
+
+def _cffi_session_cls():
+    """curl_cffi Session class, or None when the package is not installed.
+    Lazy import so a missing curl_cffi can never crash the backend —
+    the urllib path is always the fallback."""
+    global _CFFI_SESSION_CLS
+    if _CFFI_SESSION_CLS is None:
+        try:
+            from curl_cffi.requests import Session as _Cls
+            _CFFI_SESSION_CLS = _Cls
+        except Exception:
+            _CFFI_SESSION_CLS = False
+    return _CFFI_SESSION_CLS or None
+
+
+def _cffi_request(method, url, headers=None, data=None, timeout=20):
+    """One HTTP call through curl_cffi (Chrome 124 impersonation: real
+    browser TLS fingerprint + browser header order), exactly like the
+    Telegram bot's curl_cffi ladder (chrome124 first, then chrome120,
+    safari17_0). Explicitly passed headers (e.g. the Toing app identity
+    on profile calls) override the impersonated defaults, same as the bot.
+    Returns (status, text, headers_dict, final_url), or None when
+    curl_cffi is unavailable. Raises on transport errors — the caller
+    falls back to urllib. An HTTP error status (e.g. 202 WAF challenge)
+    is a real response, not an exception: it is returned, never retried.
+    The TOING_PROXY env var is honoured here too (same format as urllib)."""
+    cls = _cffi_session_cls()
+    if cls is None:
+        return None
+    proxy = _proxy_url()
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    sess = cls(impersonate="chrome124", timeout=timeout)
+    try:
+        resp = sess.request(method, url, headers=headers or {}, data=data,
+                            proxies=proxies, allow_redirects=True)
+        return resp.status_code, resp.text, dict(resp.headers), str(resp.url)
+    finally:
+        try:
+            sess.close()
+        except Exception:
+            pass
+
+
+def _swiggy_host(url):
+    try:
+        return urllib.parse.urlparse(url).netloc.lower().endswith("swiggy.com")
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------- HTTP helpers
@@ -132,8 +192,25 @@ def http_json(method, url, headers=None, body=None, timeout=20):
     network failure. `body` is serialised as JSON when given.
     When TOING_PROXY is set, the request goes through that proxy
     (urllib ProxyHandler, auth from the URL); otherwise the default
-    opener is used (direct, or the runtime's own egress proxy)."""
+    opener is used (direct, or the runtime's own egress proxy).
+    For Swiggy/Toing hosts the call first goes through curl_cffi
+    (Chrome 124 impersonation) and falls back to urllib if curl_cffi is
+    unavailable or its transport fails. Other hosts (e.g. Nominatim)
+    stay on urllib, exactly as before."""
     data = json.dumps(body).encode("utf-8") if body is not None else None
+    if _swiggy_host(url):
+        try:
+            res = _cffi_request(method, url, headers=headers, data=data,
+                                timeout=timeout)
+        except Exception:
+            res = None
+        if res is not None:
+            status, raw, resp_headers, _final = res
+            try:
+                parsed = json.loads(raw) if raw else None
+            except Exception:
+                parsed = None
+            return status, parsed, raw, resp_headers
     req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     proxy = _proxy_url()
     opener = None
@@ -163,7 +240,17 @@ def http_json(method, url, headers=None, body=None, timeout=20):
 
 def http_text(method, url, headers=None, timeout=20):
     """Like http_json but returns raw text (for HTML pages) and the final
-    URL after redirects. Returns (status, final_url, raw_text, headers)."""
+    URL after redirects. Returns (status, final_url, raw_text, headers).
+    Tries curl_cffi (Chrome 124 impersonation) first — share links and
+    short URLs often serve bot challenges to plain urllib — and falls
+    back to urllib if curl_cffi is unavailable or its transport fails."""
+    try:
+        res = _cffi_request(method, url, headers=headers, timeout=timeout)
+    except Exception:
+        res = None
+    if res is not None:
+        status, raw, resp_headers, final_url = res
+        return status, final_url, raw, resp_headers
     req = urllib.request.Request(url, headers=headers or {}, method=method)
     proxy = _proxy_url()
     opener = None

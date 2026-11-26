@@ -1,0 +1,5 @@
+# Browser impersonation for the Toing Mini backend (curl_cffi, Chrome 124).
+# Pinned to a range with manylinux wheels for the Vercel Python runtime.
+# If the install ever fails, api/_lib.py falls back to stdlib urllib — the
+# backend keeps working, it just loses the browser TLS fingerprint.
+curl-cffi>=0.7,<0.18
