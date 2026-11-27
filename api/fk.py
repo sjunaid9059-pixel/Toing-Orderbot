@@ -51,6 +51,18 @@ ALLOWED_HOSTS = {
     "m.flipkart.com",
 }
 
+# Numbered Rome hosts the Minutes app uses for its page-flow
+# (e.g. 1.rome.api.flipkart.com for /api/4/page/fetch). Any
+# <label>.rome.api.flipkart.<tld> is allowed, not just the bare host.
+def _host_allowed(host):
+    host = (host or "").lower()
+    if host in ALLOWED_HOSTS:
+        return True
+    for suffix in (".rome.api.flipkart.net", ".rome.api.flipkart.com"):
+        if host.endswith(suffix) and host[: -len(suffix)]:
+            return True
+    return False
+
 MAX_URL_LEN = 2048
 MAX_BODY_LEN = 65536
 MAX_RESP_LEN = 524288
@@ -198,7 +210,7 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             send_json(self, 400, {"ok": False, "error": "bad url"})
             return
-        if parsed.scheme != "https" or (parsed.hostname or "").lower() not in ALLOWED_HOSTS:
+        if parsed.scheme != "https" or not _host_allowed(parsed.hostname):
             send_json(self, 403, {"ok": False, "error": "host not allowed"})
             return
         headers = _clean_headers(payload.get("headers") or {})
